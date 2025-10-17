@@ -28,7 +28,7 @@ function LoginPage({ navigation }) {
     try {
       if (isLogin) {
         // ✅ LOGIN
-        const res = await axios.post('http://10.0.2.2:3000/login', {
+        const res = await axios.post('mysql://root:LTvkwuFGFomLRhwOoKtTuABgeeIVecLA@mysql.railway.internal:3306/railway/login', {
           user_email: userEmail,
           user_pass: userPass,
         });
@@ -55,7 +55,7 @@ function LoginPage({ navigation }) {
           return;
         }
 
-        const res = await axios.post('http://10.0.2.2:3000/signup', {
+        const res = await axios.post('mysql://root:LTvkwuFGFomLRhwOoKtTuABgeeIVecLA@mysql.railway.internal:3306/railway/signup', {
           user_name: userName,
           user_email: userEmail,
           user_pass: userPass,

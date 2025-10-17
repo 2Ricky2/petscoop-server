@@ -44,7 +44,7 @@ export default function AddPetPage({ navigation }) {
     });
 
     try {
-      const res = await axios.post('http://10.0.2.2:3000/upload', formData, {
+      const res = await axios.post('mysql://root:LTvkwuFGFomLRhwOoKtTuABgeeIVecLA@mysql.railway.internal:3306/railway/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       if (res.data.success) {
@@ -66,7 +66,7 @@ export default function AddPetPage({ navigation }) {
   }
 
   try {
-    const res = await axios.post('http://10.0.2.2:3000/add-pet', {
+    const res = await axios.post('mysql://root:LTvkwuFGFomLRhwOoKtTuABgeeIVecLA@mysql.railway.internal:3306/railway/add-pet', {
       pet_name,
       pet_desc,
       pet_image: uploadedUrl,
