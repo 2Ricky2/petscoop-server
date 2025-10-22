@@ -1,0 +1,1 @@
+export const API_BASE = 'https://petscoop-server-production.up.railway.app';
