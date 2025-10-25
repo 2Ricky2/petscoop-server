@@ -1,155 +1,204 @@
 // server.js
-const express = require('express');
-const mysql = require('mysql2');
-const bcrypt = require('bcryptjs');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const multer = require('multer');
-const path = require('path');
-require('dotenv').config();
+import express from "express";
+import pkg from "pg";
+import bcrypt from "bcryptjs";
+import cors from "cors";
+import bodyParser from "body-parser";
+import multer from "multer";
+import path from "path";
+import dotenv from "dotenv";
+import { fileURLToPath } from "url";
 
+dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const { Pool } = pkg;
 const app = express();
+
 app.use(cors());
 app.use(bodyParser.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// MySQL connection
-const db = mysql.createConnection({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASS || '',
-  database: process.env.DB_NAME || 'psdb',
+// 🧩 PostgreSQL connection for Railway
+const pool = new Pool({
+  host: process.env.DB_HOST || "caboose.proxy.rlwy.net",
+  port: process.env.DB_PORT || 11190,
+  user: process.env.DB_USER || "postgres",
+  password: process.env.DB_PASS || "",
+  database: process.env.DB_NAME || "railway",
+  ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
 });
 
-db.connect((err) => {
-  if (err) {
-    console.error('❌ Database connection failed:', err);
-  } else {
-    console.log('✅ Connected to MySQL Database (psdb)');
+pool
+  .connect()
+  .then(() =>
+    console.log("✅ Connected to PostgreSQL:", process.env.DB_HOST || "caboose.proxy.rlwy.net")
+  )
+  .catch((err) => console.error("❌ PostgreSQL connection failed:", err));
+
+// --- HEALTH CHECK ---
+app.get("/db-check", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({ success: true, message: "Database connected successfully" });
+  } catch (err) {
+    console.error("❌ DB Check Error:", err);
+    res.json({ success: false, message: "Database connection failed" });
   }
 });
 
-// Health check
-app.get('/db-check', (req, res) => {
-  db.query('SELECT 1', (err) => {
-    if (err) return res.json({ success: false });
-    res.json({ success: true, message: 'Database connected successfully' });
-  });
-});
-
-// Configure multer for image uploads
+// --- MULTER FILE UPLOAD CONFIG ---
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  },
+  destination: (req, file, cb) => cb(null, "uploads/"),
+  filename: (req, file, cb) =>
+    cb(null, Date.now() + path.extname(file.originalname)),
 });
 const upload = multer({ storage });
 
-// --- AUTHENTICATION ROUTES ---
+// --- AUTH ROUTES ---
 
-// Signup
-app.post('/signup', async (req, res) => {
+// ✅ Signup
+app.post("/signup", async (req, res) => {
   const { user_name, user_email, user_pass } = req.body;
   if (!user_name || !user_email || !user_pass)
-    return res.json({ success: false, message: 'All fields required' });
+    return res.json({ success: false, message: "All fields required" });
 
-  db.query('SELECT * FROM users WHERE user_email = ?', [user_email], async (err, results) => {
-    if (err) return res.json({ success: false, message: 'DB error' });
-    if (results.length > 0)
-      return res.json({ success: false, message: 'Email already exists' });
-
-    const hashedPass = await bcrypt.hash(user_pass, 10);
-    db.query(
-      'INSERT INTO users (user_name, user_email, user_pass, user_role) VALUES (?, ?, ?, ?)',
-      [user_name, user_email, hashedPass, 'user'],
-      (err) => {
-        if (err) return res.json({ success: false, message: 'Insert failed' });
-        res.json({ success: true, message: 'Signup successful' });
-      }
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE user_email = $1",
+      [user_email]
     );
-  });
+    if (rows.length > 0)
+      return res.json({ success: false, message: "Email already exists" });
+
+    const hashed = await bcrypt.hash(user_pass, 10);
+    await pool.query(
+      "INSERT INTO users (user_name, user_email, user_pass, user_role) VALUES ($1, $2, $3, $4)",
+      [user_name, user_email, hashed, "user"]
+    );
+
+    res.json({ success: true, message: "Signup successful" });
+  } catch (err) {
+    console.error("❌ Signup insert error:", err);
+    res.json({ success: false, message: err.message });
+  }
 });
 
-// Login
-app.post('/login', (req, res) => {
+// ✅ Login
+app.post("/login", async (req, res) => {
   const { user_email, user_pass } = req.body;
   if (!user_email || !user_pass)
-    return res.json({ success: false, message: 'All fields required' });
+    return res.json({ success: false, message: "All fields required" });
 
-  db.query('SELECT * FROM users WHERE user_email = ?', [user_email], async (err, results) => {
-    if (err) return res.json({ success: false, message: 'DB error' });
-    if (results.length === 0)
-      return res.json({ success: false, message: 'User not found' });
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE user_email = $1",
+      [user_email]
+    );
+    if (rows.length === 0)
+      return res.json({ success: false, message: "User not found" });
 
-    const user = results[0];
+    const user = rows[0];
     const isMatch = await bcrypt.compare(user_pass, user.user_pass);
-    if (!isMatch) return res.json({ success: false, message: 'Invalid password' });
+    if (!isMatch)
+      return res.json({ success: false, message: "Invalid password" });
 
     res.json({
       success: true,
-      message: 'Login successful',
+      message: "Login successful",
       user: { id: user.user_id, name: user.user_name, role: user.user_role },
     });
-  });
+  } catch (err) {
+    console.error("❌ Login error:", err);
+    res.json({ success: false, message: err.message });
+  }
 });
 
 // --- PET ROUTES ---
 
-// Get all pets
-app.get('/pets', (req, res) => {
-  db.query('SELECT * FROM pets ORDER BY created_at DESC', (err, results) => {
-    if (err) return res.json({ success: false, message: 'DB error' });
-    res.json({ success: true, pets: results });
-  });
+// ✅ Get all pets
+app.get("/pets", async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT * FROM pets ORDER BY created_at DESC");
+    res.json({ success: true, pets: rows });
+  } catch (err) {
+    console.error("❌ Fetch pets error:", err);
+    res.json({ success: false, message: err.message });
+  }
 });
 
-// Add new pet (with image upload)
-app.post('/add-pet', upload.single('pet_image'), (req, res) => {
+// ✅ Add a new pet
+app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   const { pet_name, pet_desc } = req.body;
-  const imagePath = req.file ? `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}` : null;
+  const imagePath = req.file
+    ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
+    : null;
 
   if (!pet_name)
-    return res.json({ success: false, message: 'Pet name required' });
+    return res.json({ success: false, message: "Pet name required" });
 
-  db.query(
-    'INSERT INTO pets (pet_name, pet_desc, pet_image) VALUES (?, ?, ?)',
-    [pet_name, pet_desc, imagePath],
-    (err) => {
-      if (err) return res.json({ success: false, message: 'Insert failed' });
-      res.json({ success: true, message: 'Pet added successfully' });
-    }
-  );
+  try {
+    await pool.query(
+      "INSERT INTO pets (pet_name, pet_desc, pet_image) VALUES ($1, $2, $3)",
+      [pet_name, pet_desc, imagePath]
+    );
+    res.json({ success: true, message: "Pet added successfully" });
+  } catch (err) {
+    console.error("❌ Add pet error:", err);
+    res.json({ success: false, message: err.message });
+  }
 });
 
-// Delete pet
-app.delete('/pets/:id', (req, res) => {
-  const id = req.params.id;
-  db.query('DELETE FROM pets WHERE pet_id = ?', [id], (err, result) => {
-    if (err) return res.json({ success: false, message: 'Delete failed' });
-    res.json({ success: true, message: 'Pet deleted successfully' });
-  });
+// ✅ Delete pet
+app.delete("/pets/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM pets WHERE pet_id = $1", [req.params.id]);
+    res.json({ success: true, message: "Pet deleted successfully" });
+  } catch (err) {
+    console.error("❌ Delete pet error:", err);
+    res.json({ success: false, message: err.message });
+  }
 });
 
 // --- ADMIN ROUTES ---
 
-// Get all users
-app.get('/users', (req, res) => {
-  db.query('SELECT user_id, user_name, user_email, user_role, created_at FROM users', (err, results) => {
-    if (err) return res.json({ success: false, message: 'DB error' });
-    res.json({ success: true, users: results });
-  });
+// ✅ Get all users
+app.get("/users", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT user_id, user_name, user_email, user_role, created_at FROM users ORDER BY created_at DESC"
+    );
+    res.json({ success: true, users: rows });
+  } catch (err) {
+    console.error("❌ Fetch users error:", err);
+    res.json({ success: false, message: err.message });
+  }
 });
 
-// Delete user
-app.delete('/users/:id', (req, res) => {
-  const id = req.params.id;
-  db.query('DELETE FROM users WHERE user_id = ?', [id], (err, result) => {
-    if (err) return res.json({ success: false, message: 'Delete failed' });
-    res.json({ success: true, message: 'User deleted successfully' });
-  });
+// ✅ Delete user
+app.delete("/users/:id", async (req, res) => {
+  try {
+    await pool.query("DELETE FROM users WHERE user_id = $1", [req.params.id]);
+    res.json({ success: true, message: "User deleted successfully" });
+  } catch (err) {
+    console.error("❌ Delete user error:", err);
+    res.json({ success: false, message: err.message });
+  }
+});
+
+// --- ROOT + TEST ROUTES ---
+app.get("/", (req, res) => {
+  res.send("🐾 Petscoop PostgreSQL Server is running successfully!");
+});
+
+app.get("/test-db", async (req, res) => {
+  try {
+    const { rows } = await pool.query("SELECT NOW() AS time");
+    res.json({ success: true, time: rows[0].time });
+  } catch (err) {
+    res.json({ success: false, message: err.message });
+  }
 });
 
 // --- START SERVER ---
