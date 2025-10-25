@@ -5,6 +5,7 @@ import bcrypt from "bcryptjs";
 import cors from "cors";
 import bodyParser from "body-parser";
 import multer from "multer";
+import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
@@ -16,9 +17,17 @@ const __dirname = path.dirname(__filename);
 const { Pool } = pkg;
 const app = express();
 
+// ✅ Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// ✅ Ensure uploads folder exists
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+  console.log("📁 Created uploads folder");
+}
 
 // 🧩 PostgreSQL connection for Railway
 const pool = new Pool({
@@ -50,11 +59,28 @@ app.get("/db-check", async (req, res) => {
 
 // --- MULTER FILE UPLOAD CONFIG ---
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) =>
     cb(null, Date.now() + path.extname(file.originalname)),
 });
 const upload = multer({ storage });
+
+// ✅ Generic upload endpoint for React Native
+app.post("/upload", upload.single("image"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No file uploaded" });
+    }
+
+    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+    console.log("📤 Uploaded:", fileUrl);
+
+    res.json({ success: true, imageUrl: fileUrl });
+  } catch (err) {
+    console.error("❌ Upload error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 // --- AUTH ROUTES ---
 
@@ -128,7 +154,7 @@ app.get("/pets", async (req, res) => {
   }
 });
 
-// ✅ Add a new pet
+// ✅ Add a new pet (with image)
 app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   const { pet_name, pet_desc } = req.body;
   const imagePath = req.file
