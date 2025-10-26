@@ -31,7 +31,7 @@ if (!fs.existsSync(uploadDir)) {
   console.log("📁 Created uploads folder");
 }
 
-// 🧩 PostgreSQL connection for Railway
+// 🧩 PostgreSQL connection
 const pool = new Pool({
   host: process.env.DB_HOST || "caboose.proxy.rlwy.net",
   port: process.env.DB_PORT || 11190,
@@ -43,15 +43,10 @@ const pool = new Pool({
 
 pool
   .connect()
-  .then(() =>
-    console.log(
-      "✅ Connected to PostgreSQL:",
-      process.env.DB_HOST || "caboose.proxy.rlwy.net"
-    )
-  )
+  .then(() => console.log("✅ Connected to PostgreSQL"))
   .catch((err) => console.error("❌ PostgreSQL connection failed:", err));
 
-// --- HEALTH CHECK ---
+// --- Health Check ---
 app.get("/db-check", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
@@ -62,7 +57,7 @@ app.get("/db-check", async (_req, res) => {
   }
 });
 
-// --- MULTER FILE UPLOAD CONFIG ---
+// --- File Upload ---
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) =>
@@ -70,38 +65,16 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// ✅ Generic upload endpoint for React Native (optional)
-app.post("/upload", upload.single("image"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res
-        .status(400)
-        .json({ success: false, message: "No file uploaded" });
-    }
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${
-      req.file.filename
-    }`;
-    console.log("📤 Uploaded:", fileUrl);
-    res.json({ success: true, imageUrl: fileUrl });
-  } catch (err) {
-    console.error("❌ Upload error:", err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// --- AUTH ROUTES ---
-
-// ✅ Signup
+// --- Auth Routes ---
 app.post("/signup", async (req, res) => {
   const { user_name, user_email, user_pass } = req.body;
   if (!user_name || !user_email || !user_pass)
     return res.json({ success: false, message: "All fields required" });
 
   try {
-    const { rows } = await pool.query(
-      "SELECT 1 FROM users WHERE user_email = $1",
-      [user_email]
-    );
+    const { rows } = await pool.query("SELECT 1 FROM users WHERE user_email=$1", [
+      user_email,
+    ]);
     if (rows.length > 0)
       return res.json({ success: false, message: "Email already exists" });
 
@@ -110,25 +83,22 @@ app.post("/signup", async (req, res) => {
       "INSERT INTO users (user_name, user_email, user_pass, user_role) VALUES ($1, $2, $3, $4)",
       [user_name, user_email, hashed, "user"]
     );
-
     res.json({ success: true, message: "Signup successful" });
   } catch (err) {
-    console.error("❌ Signup insert error:", err);
+    console.error("❌ Signup error:", err);
     res.json({ success: false, message: err.message });
   }
 });
 
-// ✅ Login
 app.post("/login", async (req, res) => {
   const { user_email, user_pass } = req.body;
   if (!user_email || !user_pass)
     return res.json({ success: false, message: "All fields required" });
 
   try {
-    const { rows } = await pool.query(
-      "SELECT * FROM users WHERE user_email = $1",
-      [user_email]
-    );
+    const { rows } = await pool.query("SELECT * FROM users WHERE user_email=$1", [
+      user_email,
+    ]);
     if (rows.length === 0)
       return res.json({ success: false, message: "User not found" });
 
@@ -148,9 +118,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// --- PET ROUTES ---
-
-// ✅ Get all pets
+// --- Pet Routes ---
 app.get("/pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -163,20 +131,19 @@ app.get("/pets", async (_req, res) => {
   }
 });
 
-// ✅ Add a new pet (with image & price)
+// ✅ Add new pet
 app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
-  const { pet_name, pet_desc, pet_price } = req.body;
+  const { pet_name, pet_desc, pet_breed, pet_price } = req.body;
   const imagePath = req.file
     ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
     : null;
 
-  if (!pet_name)
-    return res.json({ success: false, message: "Pet name required" });
+  if (!pet_name) return res.json({ success: false, message: "Pet name required" });
 
   try {
     await pool.query(
-      "INSERT INTO pets (pet_name, pet_desc, pet_image, pet_price, created_at) VALUES ($1, $2, $3, $4, NOW())",
-      [pet_name, pet_desc ?? null, imagePath, Number(pet_price) || 0]
+      "INSERT INTO pets (pet_name, pet_desc, pet_breed, pet_image, pet_price, created_at) VALUES ($1, $2, $3, $4, $5, NOW())",
+      [pet_name, pet_desc ?? null, pet_breed ?? null, imagePath, Number(pet_price) || 0]
     );
     res.json({ success: true, message: "Pet added successfully" });
   } catch (err) {
@@ -185,40 +152,41 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   }
 });
 
-// ✅ Update pet (name, desc, price, OPTIONAL image)
+// ✅ Update pet info (including price)
 app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
   try {
-    const { pet_name, pet_desc, pet_price } = req.body;
+    const { pet_name, pet_desc, pet_breed, pet_price } = req.body;
     const id = req.params.id;
-
-    // Build dynamic update
     const updates = [];
     const values = [];
     let i = 1;
 
-    if (typeof pet_name !== "undefined") {
-      updates.push(`pet_name = $${i++}`);
+    if (pet_name) {
+      updates.push(`pet_name=$${i++}`);
       values.push(pet_name);
     }
-    if (typeof pet_desc !== "undefined") {
-      updates.push(`pet_desc = $${i++}`);
+    if (pet_desc) {
+      updates.push(`pet_desc=$${i++}`);
       values.push(pet_desc);
     }
-    if (typeof pet_price !== "undefined") {
-      updates.push(`pet_price = $${i++}`);
-      values.push(Number(pet_price) || 0);
+    if (pet_breed) {
+      updates.push(`pet_breed=$${i++}`);
+      values.push(pet_breed);
+    }
+    if (pet_price) {
+      updates.push(`pet_price=$${i++}`);
+      values.push(Number(pet_price));
     }
     if (req.file) {
-      updates.push(`pet_image = $${i++}`);
+      updates.push(`pet_image=$${i++}`);
       values.push(`${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`);
     }
 
-    if (updates.length === 0) {
+    if (updates.length === 0)
       return res.json({ success: false, message: "No fields to update" });
-    }
 
     values.push(id);
-    const sql = `UPDATE pets SET ${updates.join(", ")} WHERE pet_id = $${i}`;
+    const sql = `UPDATE pets SET ${updates.join(", ")} WHERE pet_id=$${i}`;
     await pool.query(sql, values);
 
     res.json({ success: true, message: "Pet updated successfully" });
@@ -231,7 +199,7 @@ app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
 // ✅ Delete pet
 app.delete("/pets/:id", async (req, res) => {
   try {
-    await pool.query("DELETE FROM pets WHERE pet_id = $1", [req.params.id]);
+    await pool.query("DELETE FROM pets WHERE pet_id=$1", [req.params.id]);
     res.json({ success: true, message: "Pet deleted successfully" });
   } catch (err) {
     console.error("❌ Delete pet error:", err);
@@ -239,9 +207,50 @@ app.delete("/pets/:id", async (req, res) => {
   }
 });
 
-// --- ADMIN ROUTES ---
+// --- Adoption Routes ---
+app.post("/adopt", async (req, res) => {
+  const { user_id, pet_id, adopt_type } = req.body;
+  try {
+    const { rows } = await pool.query("SELECT * FROM pets WHERE pet_id=$1", [pet_id]);
+    if (rows.length === 0) return res.json({ success: false, message: "Pet not found" });
+    const pet = rows[0];
 
-// ✅ Get all users
+    await pool.query(
+      "INSERT INTO adopted_pets (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())",
+      [
+        user_id,
+        pet.pet_id,
+        pet.pet_name,
+        pet.pet_desc,
+        pet.pet_breed,
+        pet.pet_image,
+        pet.pet_price,
+        adopt_type,
+      ]
+    );
+
+    res.json({ success: true, message: "Pet adopted successfully!" });
+  } catch (err) {
+    console.error("❌ Adopt error:", err);
+    res.json({ success: false, message: err.message });
+  }
+});
+
+// ✅ Fetch user's adopted pets
+app.get("/my-adopted/:user_id", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM adopted_pets WHERE user_id=$1 ORDER BY created_at DESC",
+      [req.params.user_id]
+    );
+    res.json({ success: true, pets: rows });
+  } catch (err) {
+    console.error("❌ My adopted pets error:", err);
+    res.json({ success: false, message: err.message });
+  }
+});
+
+// --- Admin Routes ---
 app.get("/users", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -254,10 +263,9 @@ app.get("/users", async (_req, res) => {
   }
 });
 
-// ✅ Delete user
 app.delete("/users/:id", async (req, res) => {
   try {
-    await pool.query("DELETE FROM users WHERE user_id = $1", [req.params.id]);
+    await pool.query("DELETE FROM users WHERE user_id=$1", [req.params.id]);
     res.json({ success: true, message: "User deleted successfully" });
   } catch (err) {
     console.error("❌ Delete user error:", err);
@@ -265,31 +273,13 @@ app.delete("/users/:id", async (req, res) => {
   }
 });
 
-// --- ROOT + TEST ROUTES ---
-app.get("/", (_req, res) => {
-  res.send("🐾 Petscoop PostgreSQL Server is running successfully!");
-});
-
-app.get("/test-db", async (_req, res) => {
-  try {
-    const { rows } = await pool.query("SELECT NOW() AS time");
-    res.json({ success: true, time: rows[0].time });
-  } catch (err) {
-    res.json({ success: false, message: err.message });
-  }
-});
-
-// --- PAYPAL PAYMENT ROUTES ---
-
-// ✅ Create PayPal order
+// --- PayPal Routes ---
 app.post("/create-paypal-order", async (req, res) => {
   const { amount } = req.body;
-
   try {
     const auth = Buffer.from(
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64");
-
     const response = await fetch(`${process.env.PAYPAL_API}/v2/checkout/orders`, {
       method: "POST",
       headers: {
@@ -298,14 +288,9 @@ app.post("/create-paypal-order", async (req, res) => {
       },
       body: JSON.stringify({
         intent: "CAPTURE",
-        purchase_units: [
-          {
-            amount: { currency_code: "PHP", value: amount },
-          },
-        ],
+        purchase_units: [{ amount: { currency_code: "PHP", value: amount } }],
       }),
     });
-
     const data = await response.json();
     res.json(data);
   } catch (err) {
@@ -314,15 +299,16 @@ app.post("/create-paypal-order", async (req, res) => {
   }
 });
 
-// ✅ Capture PayPal order
+// ✅ Capture PayPal order and record adoption
 app.post("/capture-paypal-order", async (req, res) => {
-  const { orderID } = req.body;
+  const { orderID, user_id, pet_id, adopt_type } = req.body;
 
   try {
     const auth = Buffer.from(
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64");
 
+    // Capture the payment
     const response = await fetch(
       `${process.env.PAYPAL_API}/v2/checkout/orders/${orderID}/capture`,
       {
@@ -335,6 +321,29 @@ app.post("/capture-paypal-order", async (req, res) => {
     );
 
     const data = await response.json();
+
+    // ✅ If PayPal confirms success, log the adoption in DB
+    if (data.status === "COMPLETED" && user_id && pet_id) {
+      const petRes = await pool.query("SELECT * FROM pets WHERE pet_id=$1", [pet_id]);
+      if (petRes.rows.length > 0) {
+        const pet = petRes.rows[0];
+        await pool.query(
+          "INSERT INTO adopted_pets (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())",
+          [
+            user_id,
+            pet.pet_id,
+            pet.pet_name,
+            pet.pet_desc,
+            pet.pet_breed,
+            pet.pet_image,
+            pet.pet_price,
+            adopt_type,
+          ]
+        );
+        console.log(`🐾 Adoption logged for ${pet.pet_name} by user ${user_id}`);
+      }
+    }
+
     res.json(data);
   } catch (err) {
     console.error("❌ PayPal capture error:", err);
@@ -342,6 +351,11 @@ app.post("/capture-paypal-order", async (req, res) => {
   }
 });
 
-// --- START SERVER ---
+
+// --- Root ---
+app.get("/", (_req, res) => {
+  res.send("🐾 Petscoop PostgreSQL Server is running successfully!");
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
