@@ -271,6 +271,7 @@ console.log(
 );
 
 // Create order
+// server.js (only this route changed)
 app.post("/create-paypal-order", async (req, res) => {
   try {
     const { amount } = req.body;
@@ -279,7 +280,7 @@ app.post("/create-paypal-order", async (req, res) => {
     if (!Number.isFinite(value) || value <= 0) {
       return res.status(400).json({ success: false, message: "Invalid amount." });
     }
-    if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET) {
+    if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET || !process.env.PAYPAL_API) {
       return res.status(500).json({ success: false, message: "PayPal env vars not configured." });
     }
 
@@ -287,7 +288,7 @@ app.post("/create-paypal-order", async (req, res) => {
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64");
 
-    const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+    const response = await fetch(`${process.env.PAYPAL_API}/v2/checkout/orders`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -295,6 +296,12 @@ app.post("/create-paypal-order", async (req, res) => {
       },
       body: JSON.stringify({
         intent: "CAPTURE",
+        application_context: {
+          brand_name: "Petscoop",
+          user_action: "PAY_NOW",
+          return_url: "https://petscoop.app/return", // intercepted in WebView
+          cancel_url: "https://petscoop.app/cancel"
+        },
         purchase_units: [
           {
             amount: { currency_code: "PHP", value: value.toFixed(2) },
@@ -311,8 +318,7 @@ app.post("/create-paypal-order", async (req, res) => {
     }
 
     const approveUrl =
-      Array.isArray(data.links) &&
-      data.links.find((l) => l.rel === "approve")?.href;
+      Array.isArray(data.links) && data.links.find((l) => l.rel === "approve")?.href;
 
     return res.json({
       success: true,
@@ -325,6 +331,7 @@ app.post("/create-paypal-order", async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to create PayPal order" });
   }
 });
+
 
 // Capture + record adoption
 app.post("/capture-paypal-order", async (req, res) => {
