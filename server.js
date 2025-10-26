@@ -303,15 +303,15 @@ app.post("/create-paypal-order", async (req, res) => {
       },
       body: JSON.stringify({
           intent: "CAPTURE",
+          purchase_units: [
+            { amount: { currency_code: "PHP", value: value.toFixed(2) } },
+          ],
           application_context: {
-            return_url: process.env.PAYPAL_RETURN_URL, // e.g. https://petscoop.app/return
-            cancel_url: process.env.PAYPAL_CANCEL_URL, // e.g. https://petscoop.app/cancel
+            return_url: "https://petscoop-server-production.up.railway.app/paypal-return",
+            cancel_url: "https://petscoop-server-production.up.railway.app/paypal-cancel",
             brand_name: "PETSCOOP",
             user_action: "PAY_NOW"
-          },
-          purchase_units: [
-            { amount: { currency_code: "PHP", value: value.toFixed(2) } }
-          ],
+          }
         }),
     });
 
