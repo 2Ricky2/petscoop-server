@@ -9,6 +9,8 @@ import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
+import fetch from "node-fetch";
+
 
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
@@ -226,6 +228,70 @@ app.get("/test-db", async (req, res) => {
     res.json({ success: false, message: err.message });
   }
 });
+
+// --- PAYPAL PAYMENT ROUTES ---
+
+// ✅ Create PayPal order
+app.post("/create-paypal-order", async (req, res) => {
+  const { amount } = req.body;
+
+  try {
+    const auth = Buffer.from(
+      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+    ).toString("base64");
+
+    const response = await fetch(`${process.env.PAYPAL_API}/v2/checkout/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Basic ${auth}`,
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: { currency_code: "PHP", value: amount },
+          },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("❌ PayPal order error:", err);
+    res.status(500).json({ error: "Failed to create PayPal order" });
+  }
+});
+
+// ✅ Capture PayPal order
+app.post("/capture-paypal-order", async (req, res) => {
+  const { orderID } = req.body;
+
+  try {
+    const auth = Buffer.from(
+      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+    ).toString("base64");
+
+    const response = await fetch(
+      `${process.env.PAYPAL_API}/v2/checkout/orders/${orderID}/capture`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Basic ${auth}`,
+        },
+      }
+    );
+
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("❌ PayPal capture error:", err);
+    res.status(500).json({ error: "Failed to capture PayPal order" });
+  }
+});
+
 
 // --- START SERVER ---
 const PORT = process.env.PORT || 3000;
