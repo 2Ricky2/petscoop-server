@@ -417,6 +417,26 @@ app.post("/capture-paypal-order", async (req, res) => {
   }
 });
 
+app.get("/paypal-return", (req, res) => {
+  // PayPal will include ?token=<orderID> here
+  res.type("html").send(`<!doctype html>
+  <html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
+  <body style="font-family: sans-serif">
+    <h3>Payment approved</h3>
+    <p>You can close this window and return to the app.</p>
+    <script>/* noop: WebView will intercept this URL */</script>
+  </body></html>`);
+});
+
+app.get("/paypal-cancel", (_req, res) => {
+  res.type("html").send(`<!doctype html>
+  <html><head><meta charset="utf-8"><title>Payment Cancelled</title></head>
+  <body style="font-family: sans-serif">
+    <h3>Payment cancelled</h3>
+    <p>You can close this window and return to the app.</p>
+  </body></html>`);
+});
+
 // --- Root ---
 app.get("/", (_req, res) => {
   res.send("🐾 Petscoop PostgreSQL Server is running successfully!");
