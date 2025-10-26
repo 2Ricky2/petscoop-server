@@ -20,7 +20,8 @@ const app = express();
 
 // ✅ Middleware
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ✅ Ensure uploads folder exists
@@ -51,7 +52,7 @@ pool
   .catch((err) => console.error("❌ PostgreSQL connection failed:", err));
 
 // --- HEALTH CHECK ---
-app.get("/db-check", async (req, res) => {
+app.get("/db-check", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
     res.json({ success: true, message: "Database connected successfully" });
@@ -63,13 +64,13 @@ app.get("/db-check", async (req, res) => {
 
 // --- MULTER FILE UPLOAD CONFIG ---
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) =>
-    cb(null, Date.now() + path.extname(file.originalname)),
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) =>
+    cb(null, `${Date.now()}${path.extname(file.originalname)}`),
 });
 const upload = multer({ storage });
 
-// ✅ Generic upload endpoint for React Native
+// ✅ Generic upload endpoint for React Native (optional)
 app.post("/upload", upload.single("image"), (req, res) => {
   try {
     if (!req.file) {
@@ -77,12 +78,10 @@ app.post("/upload", upload.single("image"), (req, res) => {
         .status(400)
         .json({ success: false, message: "No file uploaded" });
     }
-
     const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${
       req.file.filename
     }`;
     console.log("📤 Uploaded:", fileUrl);
-
     res.json({ success: true, imageUrl: fileUrl });
   } catch (err) {
     console.error("❌ Upload error:", err);
@@ -100,7 +99,7 @@ app.post("/signup", async (req, res) => {
 
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM users WHERE user_email = $1",
+      "SELECT 1 FROM users WHERE user_email = $1",
       [user_email]
     );
     if (rows.length > 0)
@@ -152,10 +151,10 @@ app.post("/login", async (req, res) => {
 // --- PET ROUTES ---
 
 // ✅ Get all pets
-app.get("/pets", async (req, res) => {
+app.get("/pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM pets ORDER BY created_at DESC"
+      "SELECT * FROM pets ORDER BY created_at DESC NULLS LAST, pet_id DESC"
     );
     res.json({ success: true, pets: rows });
   } catch (err) {
@@ -164,7 +163,7 @@ app.get("/pets", async (req, res) => {
   }
 });
 
-// ✅ Add a new pet (with image)
+// ✅ Add a new pet (with image & price)
 app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   const { pet_name, pet_desc, pet_price } = req.body;
   const imagePath = req.file
@@ -176,8 +175,8 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
 
   try {
     await pool.query(
-      "INSERT INTO pets (pet_name, pet_desc, pet_image, pet_price) VALUES ($1, $2, $3, $4)",
-      [pet_name, pet_desc, imagePath, pet_price || 0]
+      "INSERT INTO pets (pet_name, pet_desc, pet_image, pet_price, created_at) VALUES ($1, $2, $3, $4, NOW())",
+      [pet_name, pet_desc ?? null, imagePath, Number(pet_price) || 0]
     );
     res.json({ success: true, message: "Pet added successfully" });
   } catch (err) {
@@ -186,17 +185,45 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   }
 });
 
-// ✅ Update pet price
-app.put("/pets/:id", async (req, res) => {
-  const { pet_price } = req.body;
+// ✅ Update pet (name, desc, price, OPTIONAL image)
+app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
   try {
-    await pool.query("UPDATE pets SET pet_price = $1 WHERE pet_id = $2", [
-      pet_price,
-      req.params.id,
-    ]);
-    res.json({ success: true, message: "Pet price updated successfully" });
+    const { pet_name, pet_desc, pet_price } = req.body;
+    const id = req.params.id;
+
+    // Build dynamic update
+    const updates = [];
+    const values = [];
+    let i = 1;
+
+    if (typeof pet_name !== "undefined") {
+      updates.push(`pet_name = $${i++}`);
+      values.push(pet_name);
+    }
+    if (typeof pet_desc !== "undefined") {
+      updates.push(`pet_desc = $${i++}`);
+      values.push(pet_desc);
+    }
+    if (typeof pet_price !== "undefined") {
+      updates.push(`pet_price = $${i++}`);
+      values.push(Number(pet_price) || 0);
+    }
+    if (req.file) {
+      updates.push(`pet_image = $${i++}`);
+      values.push(`${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`);
+    }
+
+    if (updates.length === 0) {
+      return res.json({ success: false, message: "No fields to update" });
+    }
+
+    values.push(id);
+    const sql = `UPDATE pets SET ${updates.join(", ")} WHERE pet_id = $${i}`;
+    await pool.query(sql, values);
+
+    res.json({ success: true, message: "Pet updated successfully" });
   } catch (err) {
-    console.error("❌ Update pet price error:", err);
+    console.error("❌ Update pet error:", err);
     res.json({ success: false, message: err.message });
   }
 });
@@ -215,10 +242,10 @@ app.delete("/pets/:id", async (req, res) => {
 // --- ADMIN ROUTES ---
 
 // ✅ Get all users
-app.get("/users", async (req, res) => {
+app.get("/users", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT user_id, user_name, user_email, user_role, created_at FROM users ORDER BY created_at DESC"
+      "SELECT user_id, user_name, user_email, user_role, created_at FROM users ORDER BY created_at DESC NULLS LAST"
     );
     res.json({ success: true, users: rows });
   } catch (err) {
@@ -239,11 +266,11 @@ app.delete("/users/:id", async (req, res) => {
 });
 
 // --- ROOT + TEST ROUTES ---
-app.get("/", (req, res) => {
+app.get("/", (_req, res) => {
   res.send("🐾 Petscoop PostgreSQL Server is running successfully!");
 });
 
-app.get("/test-db", async (req, res) => {
+app.get("/test-db", async (_req, res) => {
   try {
     const { rows } = await pool.query("SELECT NOW() AS time");
     res.json({ success: true, time: rows[0].time });
