@@ -279,6 +279,7 @@ console.log("🪙 PayPal:", {
 
 // Create order
 // server.js (only this route changed)
+// ✅ Create PayPal order (returns {success, id, approveUrl, data})
 app.post("/create-paypal-order", async (req, res) => {
   try {
     const { amount } = req.body;
@@ -295,6 +296,11 @@ app.post("/create-paypal-order", async (req, res) => {
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64");
 
+    // 👇 Use your deployed Railway domain here
+    const baseReturn = `https://petscoop-server-production.up.railway.app`;
+    const return_url = `${baseReturn}/paypal-return`;
+    const cancel_url = `${baseReturn}/paypal-cancel`;
+
     const response = await fetch(`${process.env.PAYPAL_API}/v2/checkout/orders`, {
       method: "POST",
       headers: {
@@ -302,35 +308,36 @@ app.post("/create-paypal-order", async (req, res) => {
         Authorization: `Basic ${auth}`,
       },
       body: JSON.stringify({
-          intent: "CAPTURE",
-          purchase_units: [
-            { amount: { currency_code: "PHP", value: value.toFixed(2) } },
-          ],
-          application_context: {
-            return_url: "https://petscoop-server-production.up.railway.app/paypal-return",
-            cancel_url: "https://petscoop-server-production.up.railway.app/paypal-cancel",
-            brand_name: "PETSCOOP",
-            user_action: "PAY_NOW"
-          }
-        }),
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: { currency_code: "PHP", value: value.toFixed(2) },
+          },
+        ],
+        // 👇 This prevents the “review on merchant site” loop
+        application_context: {
+          return_url,
+          cancel_url,
+          user_action: "PAY_NOW",
+          shipping_preference: "NO_SHIPPING",
+        },
+      }),
     });
 
     const data = await response.json();
-
     if (!response.ok) {
       console.error("❌ PayPal create order failed:", data);
       return res.status(400).json({ success: false, data });
     }
 
-    const approveUrl =
-      Array.isArray(data.links) && data.links.find((l) => l.rel === "approve")?.href;
+    const approveUrl = Array.isArray(data.links)
+      ? data.links.find((l) => l.rel === "approve")?.href
+      : null;
 
-    return res.json({
-      success: true,
-      id: data.id,
-      approveUrl,
-      data,
-    });
+    console.log(`🪙 PayPal order created: ${data.id}`);
+    if (approveUrl) console.log(`🪪 Approve URL: ${approveUrl}`);
+
+    return res.json({ success: true, id: data.id, approveUrl, data });
   } catch (err) {
     console.error("❌ PayPal order error:", err);
     return res.status(500).json({ success: false, message: "Failed to create PayPal order" });
