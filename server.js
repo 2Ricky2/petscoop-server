@@ -270,6 +270,13 @@ console.log(
   `🪙 PayPal API base: ${PAYPAL_API_BASE.includes("sandbox") ? "SANDBOX" : "LIVE"} (${PAYPAL_API_BASE})`
 );
 
+console.log("🪙 PayPal:", {
+  API: process.env.PAYPAL_API,
+  RETURN_URL: process.env.PAYPAL_RETURN_URL,
+  CANCEL_URL: process.env.PAYPAL_CANCEL_URL,
+});
+
+
 // Create order
 // server.js (only this route changed)
 app.post("/create-paypal-order", async (req, res) => {
