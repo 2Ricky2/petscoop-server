@@ -302,19 +302,17 @@ app.post("/create-paypal-order", async (req, res) => {
         Authorization: `Basic ${auth}`,
       },
       body: JSON.stringify({
-        intent: "CAPTURE",
-        application_context: {
-          brand_name: "Petscoop",
-          user_action: "PAY_NOW",
-          return_url: "https://petscoop.app/return", // intercepted in WebView
-          cancel_url: "https://petscoop.app/cancel"
-        },
-        purchase_units: [
-          {
-            amount: { currency_code: "PHP", value: value.toFixed(2) },
+          intent: "CAPTURE",
+          application_context: {
+            return_url: process.env.PAYPAL_RETURN_URL, // e.g. https://petscoop.app/return
+            cancel_url: process.env.PAYPAL_CANCEL_URL, // e.g. https://petscoop.app/cancel
+            brand_name: "PETSCOOP",
+            user_action: "PAY_NOW"
           },
-        ],
-      }),
+          purchase_units: [
+            { amount: { currency_code: "PHP", value: value.toFixed(2) } }
+          ],
+        }),
     });
 
     const data = await response.json();
