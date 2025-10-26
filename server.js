@@ -11,7 +11,6 @@ import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import fetch from "node-fetch";
 
-
 dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,7 +43,10 @@ const pool = new Pool({
 pool
   .connect()
   .then(() =>
-    console.log("✅ Connected to PostgreSQL:", process.env.DB_HOST || "caboose.proxy.rlwy.net")
+    console.log(
+      "✅ Connected to PostgreSQL:",
+      process.env.DB_HOST || "caboose.proxy.rlwy.net"
+    )
   )
   .catch((err) => console.error("❌ PostgreSQL connection failed:", err));
 
@@ -71,10 +73,14 @@ const upload = multer({ storage });
 app.post("/upload", upload.single("image"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, message: "No file uploaded" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No file uploaded" });
     }
 
-    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
+    const fileUrl = `${req.protocol}://${req.get("host")}/uploads/${
+      req.file.filename
+    }`;
     console.log("📤 Uploaded:", fileUrl);
 
     res.json({ success: true, imageUrl: fileUrl });
@@ -148,7 +154,9 @@ app.post("/login", async (req, res) => {
 // ✅ Get all pets
 app.get("/pets", async (req, res) => {
   try {
-    const { rows } = await pool.query("SELECT * FROM pets ORDER BY created_at DESC");
+    const { rows } = await pool.query(
+      "SELECT * FROM pets ORDER BY created_at DESC"
+    );
     res.json({ success: true, pets: rows });
   } catch (err) {
     console.error("❌ Fetch pets error:", err);
@@ -158,7 +166,7 @@ app.get("/pets", async (req, res) => {
 
 // ✅ Add a new pet (with image)
 app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
-  const { pet_name, pet_desc } = req.body;
+  const { pet_name, pet_desc, pet_price } = req.body;
   const imagePath = req.file
     ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
     : null;
@@ -168,12 +176,27 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
 
   try {
     await pool.query(
-      "INSERT INTO pets (pet_name, pet_desc, pet_image) VALUES ($1, $2, $3)",
-      [pet_name, pet_desc, imagePath]
+      "INSERT INTO pets (pet_name, pet_desc, pet_image, pet_price) VALUES ($1, $2, $3, $4)",
+      [pet_name, pet_desc, imagePath, pet_price || 0]
     );
     res.json({ success: true, message: "Pet added successfully" });
   } catch (err) {
     console.error("❌ Add pet error:", err);
+    res.json({ success: false, message: err.message });
+  }
+});
+
+// ✅ Update pet price
+app.put("/pets/:id", async (req, res) => {
+  const { pet_price } = req.body;
+  try {
+    await pool.query("UPDATE pets SET pet_price = $1 WHERE pet_id = $2", [
+      pet_price,
+      req.params.id,
+    ]);
+    res.json({ success: true, message: "Pet price updated successfully" });
+  } catch (err) {
+    console.error("❌ Update pet price error:", err);
     res.json({ success: false, message: err.message });
   }
 });
@@ -291,7 +314,6 @@ app.post("/capture-paypal-order", async (req, res) => {
     res.status(500).json({ error: "Failed to capture PayPal order" });
   }
 });
-
 
 // --- START SERVER ---
 const PORT = process.env.PORT || 3000;
