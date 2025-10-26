@@ -18,6 +18,9 @@ const __dirname = path.dirname(__filename);
 const { Pool } = pkg;
 const app = express();
 
+// Ensure correct proto/host behind Railway proxy (so req.protocol === 'https')
+app.set("trust proxy", 1);
+
 // ✅ Middleware
 app.use(cors());
 app.use(bodyParser.json({ limit: "10mb" }));
@@ -64,7 +67,6 @@ const storage = multer.diskStorage({
     cb(null, `${Date.now()}${path.extname(file.originalname)}`),
 });
 const fileFilter = (_req, file, cb) => {
-  // allow images only
   if (/^image\//i.test(file.mimetype)) return cb(null, true);
   return cb(new Error("Only image uploads are allowed"));
 };
@@ -269,16 +271,12 @@ const PAYPAL_API_BASE =
 console.log(
   `🪙 PayPal API base: ${PAYPAL_API_BASE.includes("sandbox") ? "SANDBOX" : "LIVE"} (${PAYPAL_API_BASE})`
 );
-
 console.log("🪙 PayPal:", {
   API: process.env.PAYPAL_API,
   RETURN_URL: process.env.PAYPAL_RETURN_URL,
   CANCEL_URL: process.env.PAYPAL_CANCEL_URL,
 });
 
-
-// Create order
-// server.js (only this route changed)
 // ✅ Create PayPal order (returns {success, id, approveUrl, data})
 app.post("/create-paypal-order", async (req, res) => {
   try {
@@ -296,8 +294,8 @@ app.post("/create-paypal-order", async (req, res) => {
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64");
 
-    // 👇 Use your deployed Railway domain here
-    const baseReturn = `https://petscoop-server-production.up.railway.app`;
+    // Build absolute return/cancel URLs from the real request host
+    const baseReturn = `${req.protocol}://${req.get("host")}`;
     const return_url = `${baseReturn}/paypal-return`;
     const cancel_url = `${baseReturn}/paypal-cancel`;
 
@@ -314,12 +312,12 @@ app.post("/create-paypal-order", async (req, res) => {
             amount: { currency_code: "PHP", value: value.toFixed(2) },
           },
         ],
-        // 👇 This prevents the “review on merchant site” loop
         application_context: {
           return_url,
           cancel_url,
           user_action: "PAY_NOW",
           shipping_preference: "NO_SHIPPING",
+          brand_name: "Petscoop",
         },
       }),
     });
@@ -344,8 +342,7 @@ app.post("/create-paypal-order", async (req, res) => {
   }
 });
 
-
-// Capture + record adoption
+// ✅ Capture + record adoption
 app.post("/capture-paypal-order", async (req, res) => {
   try {
     const { orderID, user_id, pet_id, adopt_type } = req.body;
@@ -424,24 +421,25 @@ app.post("/capture-paypal-order", async (req, res) => {
   }
 });
 
+// --- PayPal return/cancel pages (for WebView redirect) ---
 app.get("/paypal-return", (req, res) => {
-  // PayPal will include ?token=<orderID> here
+  // PayPal will include ?token=<orderID>
   res.type("html").send(`<!doctype html>
-  <html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
-  <body style="font-family: sans-serif">
-    <h3>Payment approved</h3>
-    <p>You can close this window and return to the app.</p>
-    <script>/* noop: WebView will intercept this URL */</script>
-  </body></html>`);
+<html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
+<body style="font-family: sans-serif; padding:24px">
+  <h3>Payment approved</h3>
+  <p>You can close this window and return to the app.</p>
+  <script>/* noop: WebView will intercept this URL */</script>
+</body></html>`);
 });
 
 app.get("/paypal-cancel", (_req, res) => {
   res.type("html").send(`<!doctype html>
-  <html><head><meta charset="utf-8"><title>Payment Cancelled</title></head>
-  <body style="font-family: sans-serif">
-    <h3>Payment cancelled</h3>
-    <p>You can close this window and return to the app.</p>
-  </body></html>`);
+<html><head><meta charset="utf-8"><title>Payment Cancelled</title></head>
+<body style="font-family: sans-serif; padding:24px">
+  <h3>Payment cancelled</h3>
+  <p>You can close this window and return to the app.</p>
+</body></html>`);
 });
 
 // --- Root ---
