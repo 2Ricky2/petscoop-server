@@ -227,7 +227,7 @@ app.delete("/pets/:id", async (req, res) => {
 });
 
 // --- Adoption Routes ---
-// Manual (non-PayPal) adoption — always start as PENDING
+// Manual (non-PayPal) adoption — start as PENDING and hide pet
 app.post("/adopt", async (req, res) => {
   const { user_id, pet_id, adopt_type } = req.body;
   try {
@@ -235,12 +235,13 @@ app.post("/adopt", async (req, res) => {
     if (rows.length === 0) return res.json({ success: false, message: "Pet not found" });
     const pet = rows[0];
 
-    const adopt_status = "pending";
+    const adopt_status = "pending"; // always start pending
 
-    await pool.query(
+    const ins = await pool.query(
       `INSERT INTO adopted_pets
        (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, adopt_status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+       RETURNING adopt_id`,
       [
         user_id,
         pet.pet_id,
@@ -249,15 +250,15 @@ app.post("/adopt", async (req, res) => {
         pet.pet_breed,
         pet.pet_image,
         pet.pet_price,
-        adopt_type,      // "full" | "partial"
-        adopt_status,    // "pending"
+        adopt_type,
+        adopt_status,
       ]
     );
 
     // mark as adopted so it no longer shows in user AdoptPage
     await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [pet_id]);
 
-    res.json({ success: true, message: "Adoption recorded (status: pending)" });
+    res.json({ success: true, message: "Pet adoption request created!", adopt_id: ins.rows?.[0]?.adopt_id });
   } catch (err) {
     console.error("❌ Adopt error:", err);
     res.json({ success: false, message: err.message });
@@ -294,27 +295,48 @@ app.get("/admin/adopted-pets", async (_req, res) => {
   }
 });
 
-// ✅ Admin: update adoption status (pending | ready_for_pickup | fully_adopted)
+// ✅ Admin: update adoption status (alias-normalized, 'picked_up' → 'fully_adopted')
 app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   try {
     const { adopt_id } = req.params;
-    const { adopt_status } = req.body;
+    let { adopt_status } = req.body;
 
-    const allowed = ["pending", "ready_for_pickup", "fully_adopted"];
-    if (!allowed.includes(adopt_status)) {
-      return res.json({ success: false, message: "Invalid status." });
+    // Normalize incoming values to canonical DB values
+    const mapStatus = {
+      pending: "pending",
+      ready: "ready_for_pickup",
+      ready_for_pickup: "ready_for_pickup",
+      picked_up: "fully_adopted",     // normalize picked_up → fully_adopted
+      fully_adopted: "fully_adopted",
+      cancelled: "cancelled",
+    };
+
+    const canonical = mapStatus[String(adopt_status || "").toLowerCase()];
+    if (!canonical) {
+      return res.json({
+        success: false,
+        message:
+          "Invalid status. Allowed: pending, ready, ready_for_pickup, picked_up, fully_adopted, cancelled",
+      });
     }
 
+    // Update by either adopt_id or id (handles different schemas)
     const result = await pool.query(
-      "UPDATE adopted_pets SET adopt_status=$1 WHERE adopt_id=$2",
-      [adopt_status, adopt_id]
+      `UPDATE adopted_pets
+         SET adopt_status = $1
+       WHERE adopt_id = $2 OR id = $2`,
+      [canonical, adopt_id]
     );
 
     if (result.rowCount === 0) {
       return res.status(404).json({ success: false, message: "Adoption not found" });
     }
 
-    return res.json({ success: true, message: "Adoption status updated." });
+    return res.json({
+      success: true,
+      message: `Adoption status updated to '${canonical}'.`,
+      adopt_status: canonical,
+    });
   } catch (err) {
     console.error("❌ Update adoption status error:", err);
     res.json({ success: false, message: err.message });
@@ -399,7 +421,7 @@ app.post("/create-paypal-order", async (req, res) => {
   }
 });
 
-// ✅ Capture + record adoption — always start as PENDING
+// ✅ Capture + record adoption — start as PENDING and hide pet
 app.post("/capture-paypal-order", async (req, res) => {
   try {
     const { orderID, user_id, pet_id, adopt_type } = req.body;
@@ -450,7 +472,7 @@ app.post("/capture-paypal-order", async (req, res) => {
     }
 
     const pet = petRes.rows[0];
-    const adopt_status = "pending";
+    const adopt_status = "pending"; // always start pending
 
     await pool.query(
       `INSERT INTO adopted_pets 
@@ -465,7 +487,7 @@ app.post("/capture-paypal-order", async (req, res) => {
         pet.pet_image ?? null,
         pet.pet_price ?? 0,
         adopt_type ?? "full",
-        adopt_status, // pending
+        adopt_status,
       ]
     );
 
