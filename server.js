@@ -34,6 +34,57 @@ if (!fs.existsSync(uploadDir)) {
   console.log("📁 Created uploads folder");
 }
 
+// ---------- Helpers (needed by stray report routes) ----------
+function toNumber(n) {
+  const v = parseFloat(n);
+  return Number.isFinite(v) ? v : null;
+}
+function validLatLng(lat, lng) {
+  return (
+    lat !== null &&
+    lng !== null &&
+    lat >= -90 &&
+    lat <= 90 &&
+    lng >= -180 &&
+    lng <= 180
+  );
+}
+// Save base64 image (data:image/*;base64,...) into /uploads and return a public URL
+async function saveBase64ImageToUploads(base64Str, req) {
+  try {
+    if (!base64Str) return null;
+
+    let mime = "image/jpeg";
+    let b64 = base64Str;
+
+    // Accept both "data:image/jpeg;base64,AAAA" and raw base64
+    if (base64Str.startsWith("data:")) {
+      const m = base64Str.match(/^data:(.*?);base64,(.*)$/);
+      if (!m) return null;
+      mime = m[1] || "image/jpeg";
+      b64 = m[2];
+    }
+
+    const buf = Buffer.from(b64, "base64");
+    const ext =
+      (mime.includes("png") && ".png") ||
+      (mime.includes("webp") && ".webp") ||
+      (mime.includes("jpg") || mime.includes("jpeg") ? ".jpg" : ".jpg");
+
+    const fname = `stray_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2)}${ext}`;
+    const fullPath = path.join(__dirname, "uploads", fname);
+    await fs.promises.writeFile(fullPath, buf);
+
+    return `${req.protocol}://${req.get("host")}/uploads/${fname}`;
+  } catch (e) {
+    console.error("saveBase64ImageToUploads error:", e);
+    return null;
+  }
+}
+// -------------------------------------------------------------
+
 // 🧩 PostgreSQL connection
 const pool = new Pool({
   host: process.env.DB_HOST || "caboose.proxy.rlwy.net",
@@ -324,7 +375,7 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       pending: "pending",
       ready: "ready_for_pickup",
       ready_for_pickup: "ready_for_pickup",
-      picked_up: "fully_adopted",     // normalize picked_up → fully_adopted
+      picked_up: "fully_adopted", // normalize picked_up → fully_adopted
       fully_adopted: "fully_adopted",
       cancelled: "cancelled",
     };
@@ -666,9 +717,6 @@ app.put("/admin/stray-reports/:report_id/status", async (req, res) => {
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 });
-
-
-
 
 // --- Root ---
 app.get("/", (_req, res) => {
