@@ -79,9 +79,10 @@ app.post("/signup", async (req, res) => {
     return res.json({ success: false, message: "All fields required" });
 
   try {
-    const { rows } = await pool.query("SELECT 1 FROM users WHERE user_email=$1", [
-      user_email,
-    ]);
+    const { rows } = await pool.query(
+      "SELECT 1 FROM users WHERE user_email=$1",
+      [user_email]
+    );
     if (rows.length > 0)
       return res.json({ success: false, message: "Email already exists" });
 
@@ -103,9 +104,10 @@ app.post("/login", async (req, res) => {
     return res.json({ success: false, message: "All fields required" });
 
   try {
-    const { rows } = await pool.query("SELECT * FROM users WHERE user_email=$1", [
-      user_email,
-    ]);
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE user_email=$1",
+      [user_email]
+    );
     if (rows.length === 0)
       return res.json({ success: false, message: "User not found" });
 
@@ -126,10 +128,14 @@ app.post("/login", async (req, res) => {
 });
 
 // --- Pet Routes ---
+// ▶️ Users should NOT see adopted pets
 app.get("/pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      "SELECT * FROM pets ORDER BY created_at DESC NULLS LAST, pet_id DESC"
+      `SELECT * 
+       FROM pets 
+       WHERE COALESCE(is_adopted, false) = false
+       ORDER BY created_at DESC NULLS LAST, pet_id DESC`
     );
     res.json({ success: true, pets: rows });
   } catch (err) {
@@ -145,7 +151,8 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
     ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
     : null;
 
-  if (!pet_name) return res.json({ success: false, message: "Pet name required" });
+  if (!pet_name)
+    return res.json({ success: false, message: "Pet name required" });
 
   try {
     const priceNum = Number.isFinite(parseFloat(pet_price))
@@ -153,7 +160,9 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
       : 0;
 
     await pool.query(
-      "INSERT INTO pets (pet_name, pet_desc, pet_breed, pet_image, pet_price, created_at) VALUES ($1, $2, $3, $4, $5, NOW())",
+      `INSERT INTO pets 
+       (pet_name, pet_desc, pet_breed, pet_image, pet_price, is_adopted, created_at) 
+       VALUES ($1, $2, $3, $4, $5, false, NOW())`,
       [pet_name, pet_desc ?? null, pet_breed ?? null, imagePath, priceNum]
     );
     res.json({ success: true, message: "Pet added successfully" });
@@ -166,7 +175,7 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
 // ✅ Update pet info (including price)
 app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
   try {
-    const { pet_name, pet_desc, pet_breed, pet_price } = req.body;
+    const { pet_name, pet_desc, pet_breed, pet_price, is_adopted } = req.body;
     const id = req.params.id;
     const updates = [];
     const values = [];
@@ -191,9 +200,15 @@ app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
       updates.push(`pet_price=$${i++}`);
       values.push(priceNum);
     }
+    if (typeof is_adopted !== "undefined") {
+      updates.push(`is_adopted=$${i++}`);
+      values.push(!!JSON.parse(String(is_adopted)));
+    }
     if (req.file) {
       updates.push(`pet_image=$${i++}`);
-      values.push(`${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`);
+      values.push(
+        `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
+      );
     }
 
     if (updates.length === 0)
@@ -225,12 +240,18 @@ app.delete("/pets/:id", async (req, res) => {
 app.post("/adopt", async (req, res) => {
   const { user_id, pet_id, adopt_type } = req.body;
   try {
-    const { rows } = await pool.query("SELECT * FROM pets WHERE pet_id=$1", [pet_id]);
-    if (rows.length === 0) return res.json({ success: false, message: "Pet not found" });
+    const { rows } = await pool.query("SELECT * FROM pets WHERE pet_id=$1", [
+      pet_id,
+    ]);
+    if (rows.length === 0)
+      return res.json({ success: false, message: "Pet not found" });
     const pet = rows[0];
 
+    // Insert log
     await pool.query(
-      "INSERT INTO adopted_pets (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())",
+      `INSERT INTO adopted_pets 
+        (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
       [
         user_id,
         pet.pet_id,
@@ -242,6 +263,11 @@ app.post("/adopt", async (req, res) => {
         adopt_type,
       ]
     );
+
+    // Mark pet as adopted
+    await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [
+      pet_id,
+    ]);
 
     res.json({ success: true, message: "Pet adopted successfully!" });
   } catch (err) {
@@ -264,38 +290,58 @@ app.get("/my-adopted/:user_id", async (req, res) => {
   }
 });
 
-// --- PayPal (OAuth helper) ---
-const PAYPAL_API_BASE = process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
+// ✅ Admin: list all adopted pets (with user and pet info)
+app.get("/admin/adopted-pets", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ap.*, 
+              u.user_name, u.user_email
+       FROM adopted_pets ap
+       LEFT JOIN users u ON u.user_id = ap.user_id
+       ORDER BY ap.created_at DESC`
+    );
+    res.json({ success: true, adopted: rows });
+  } catch (err) {
+    console.error("❌ Admin adopted list error:", err);
+    res.json({ success: false, message: err.message });
+  }
+});
+
+// --- PayPal Routes ---
+const PAYPAL_API_BASE =
+  process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
+
 console.log(
-  `🪙 PayPal API base: ${PAYPAL_API_BASE.includes("sandbox") ? "SANDBOX" : "LIVE"} (${PAYPAL_API_BASE})`
+  `🪙 PayPal API base: ${
+    PAYPAL_API_BASE.includes("sandbox") ? "SANDBOX" : "LIVE"
+  } (${PAYPAL_API_BASE})`
 );
-console.log("🪙 PayPal env:", {
+
+console.log("🪙 PayPal:", {
   API: process.env.PAYPAL_API,
   RETURN_URL: process.env.PAYPAL_RETURN_URL,
   CANCEL_URL: process.env.PAYPAL_CANCEL_URL,
 });
 
-async function getPayPalAccessToken() {
-  const basic = Buffer.from(
+const getPayPalAccessToken = async () => {
+  const auth = Buffer.from(
     `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
   ).toString("base64");
-
-  const resp = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+  const r = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
     method: "POST",
     headers: {
-      "Authorization": `Basic ${basic}`,
+      Authorization: `Basic ${auth}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=client_credentials",
   });
-
-  const data = await resp.json();
-  if (!resp.ok) {
-    console.error("❌ PayPal token error", resp.status, data);
-    throw new Error(`PayPal token failed: ${resp.status}`);
+  const j = await r.json();
+  if (!r.ok) {
+    console.error("❌ PayPal token error:", j);
+    throw new Error("PayPal token failed");
   }
-  return data.access_token;
-}
+  return j.access_token;
+};
 
 // ✅ Create PayPal order (returns {success, id, approveUrl, data})
 app.post("/create-paypal-order", async (req, res) => {
@@ -304,45 +350,57 @@ app.post("/create-paypal-order", async (req, res) => {
 
     const value = parseFloat(amount);
     if (!Number.isFinite(value) || value <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid amount." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid amount." });
     }
-    if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET || !process.env.PAYPAL_API) {
-      return res.status(500).json({ success: false, message: "PayPal env vars not configured." });
+    if (
+      !process.env.PAYPAL_CLIENT_ID ||
+      !process.env.PAYPAL_SECRET ||
+      !process.env.PAYPAL_API
+    ) {
+      return res.status(500).json({
+        success: false,
+        message: "PayPal env vars not configured.",
+      });
     }
-
-    const accessToken = await getPayPalAccessToken();
 
     // Build absolute return/cancel URLs from the real request host
     const baseReturn = `${req.protocol}://${req.get("host")}`;
     const return_url = `${baseReturn}/paypal-return`;
     const cancel_url = `${baseReturn}/paypal-cancel`;
 
-    const resp = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({
-        intent: "CAPTURE",
-        purchase_units: [
-          {
-            amount: { currency_code: "PHP", value: value.toFixed(2) },
-          },
-        ],
-        application_context: {
-          return_url,
-          cancel_url,
-          user_action: "PAY_NOW",
-          shipping_preference: "NO_SHIPPING",
-          brand_name: "Petscoop",
-        },
-      }),
-    });
+    const accessToken = await getPayPalAccessToken();
 
-    const data = await resp.json();
-    if (!resp.ok) {
-      console.error("❌ PayPal create order failed:", resp.status, data);
+    const response = await fetch(
+      `${process.env.PAYPAL_API}/v2/checkout/orders`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          intent: "CAPTURE",
+          purchase_units: [
+            {
+              amount: { currency_code: "PHP", value: value.toFixed(2) },
+            },
+          ],
+          application_context: {
+            return_url,
+            cancel_url,
+            user_action: "PAY_NOW",
+            shipping_preference: "NO_SHIPPING",
+            brand_name: "Petscoop",
+          },
+        }),
+      }
+    );
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("❌ PayPal create order failed:", data);
       return res.status(400).json({ success: false, data });
     }
 
@@ -356,45 +414,60 @@ app.post("/create-paypal-order", async (req, res) => {
     return res.json({ success: true, id: data.id, approveUrl, data });
   } catch (err) {
     console.error("❌ PayPal order error:", err);
-    return res.status(500).json({ success: false, message: "Failed to create PayPal order" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to create PayPal order" });
   }
 });
 
-// ✅ Capture + record adoption
-// ✅ Capture + record adoption (idempotent; treats already-captured as success)
+// ✅ Capture + record adoption (idempotent)
 app.post("/capture-paypal-order", async (req, res) => {
   try {
     const { orderID, user_id, pet_id, adopt_type } = req.body;
 
     if (!orderID) {
-      return res.status(400).json({ success: false, message: "orderID is required." });
+      return res
+        .status(400)
+        .json({ success: false, message: "orderID is required." });
     }
     if (!user_id || !pet_id) {
-      return res.status(400).json({ success: false, message: "user_id and pet_id are required." });
+      return res.status(400).json({
+        success: false,
+        message: "user_id and pet_id are required.",
+      });
     }
     if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET) {
-      return res.status(500).json({ success: false, message: "PayPal env vars not configured." });
+      return res.status(500).json({
+        success: false,
+        message: "PayPal env vars not configured.",
+      });
     }
 
     const accessToken = await getPayPalAccessToken();
 
     // Helper to fetch order details (for already-captured case)
     const fetchOrder = async () => {
-      const r = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      const r = await fetch(
+        `${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }
+      );
       const j = await r.json();
       return { ok: r.ok, data: j };
     };
 
     // Try to capture
-    const resp = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
+    const resp = await fetch(
+      `${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
 
     let data = await resp.json();
 
@@ -410,7 +483,6 @@ app.post("/capture-paypal-order", async (req, res) => {
         return res.status(400).json({ success: false, data });
       }
 
-      // Fetch order details to read amounts/status
       const ord = await fetchOrder();
       if (!ord.ok) {
         console.error("❌ Failed to fetch captured order details:", ord.data);
@@ -419,7 +491,6 @@ app.post("/capture-paypal-order", async (req, res) => {
       data = ord.data;
     }
 
-    // At this point, order is completed or was already completed.
     const status = data?.status;
     if (status !== "COMPLETED") {
       console.error("❌ Order not completed:", status, data);
@@ -432,7 +503,9 @@ app.post("/capture-paypal-order", async (req, res) => {
       null;
 
     // Ensure pet exists
-    const petRes = await pool.query("SELECT * FROM pets WHERE pet_id = $1", [pet_id]);
+    const petRes = await pool.query("SELECT * FROM pets WHERE pet_id = $1", [
+      pet_id,
+    ]);
     if (petRes.rows.length === 0) {
       console.warn("⚠️ Pet not found, but capture succeeded. orderID:", orderID);
       return res.json({
@@ -443,7 +516,7 @@ app.post("/capture-paypal-order", async (req, res) => {
     }
     const pet = petRes.rows[0];
 
-    // ✅ Idempotency: don’t insert duplicate adoption for same user+pet
+    // Idempotency: don’t insert duplicate adoption for same user+pet
     const existing = await pool.query(
       "SELECT 1 FROM adopted_pets WHERE user_id=$1 AND pet_id=$2 LIMIT 1",
       [user_id, pet_id]
@@ -464,10 +537,19 @@ app.post("/capture-paypal-order", async (req, res) => {
           adopt_type ?? "full",
         ]
       );
+      // Mark pet as adopted now
+      await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [
+        pet_id,
+      ]);
+
       console.log(
         `🐾 Adoption logged (order ${orderID}) pet_id=${pet_id} user_id=${user_id}, type=${adopt_type}, paid=${paidAmount}`
       );
     } else {
+      // Ensure pet marked adopted
+      await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [
+        pet_id,
+      ]);
       console.log(
         `ℹ️ Adoption already recorded (user_id=${user_id}, pet_id=${pet_id}).`
       );
@@ -476,26 +558,27 @@ app.post("/capture-paypal-order", async (req, res) => {
     return res.json({ success: true, data });
   } catch (err) {
     console.error("❌ PayPal capture error:", err);
-    return res.status(500).json({ success: false, message: "Failed to capture PayPal order" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to capture PayPal order" });
   }
 });
 
-
 // --- PayPal return/cancel pages (for WebView redirect) ---
-app.get("/paypal-return", (req, res) => {
-  // PayPal will include ?token=<orderID>
-  res.type("html").send(`<!doctype html>
-<html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
+app.get("/paypal-return", (_req, res) => {
+  res
+    .type("html")
+    .send(`<!doctype html><html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
 <body style="font-family: sans-serif; padding:24px">
   <h3>Payment approved</h3>
   <p>You can close this window and return to the app.</p>
-  <script>/* noop: WebView will intercept this URL */</script>
 </body></html>`);
 });
 
 app.get("/paypal-cancel", (_req, res) => {
-  res.type("html").send(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Payment Cancelled</title></head>
+  res
+    .type("html")
+    .send(`<!doctype html><html><head><meta charset="utf-8"><title>Payment Cancelled</title></head>
 <body style="font-family: sans-serif; padding:24px">
   <h3>Payment cancelled</h3>
   <p>You can close this window and return to the app.</p>
