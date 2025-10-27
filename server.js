@@ -235,10 +235,12 @@ app.post("/adopt", async (req, res) => {
     if (rows.length === 0) return res.json({ success: false, message: "Pet not found" });
     const pet = rows[0];
 
+    const adopt_status = "pending"; // always start pending
+
     const ins = await pool.query(
       `INSERT INTO adopted_pets
        (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, adopt_status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
        RETURNING adopt_id`,
       [
         user_id,
@@ -249,6 +251,7 @@ app.post("/adopt", async (req, res) => {
         pet.pet_image,
         pet.pet_price,
         adopt_type,
+        adopt_status,
       ]
     );
 
@@ -276,17 +279,14 @@ app.get("/my-adopted/:user_id", async (req, res) => {
   }
 });
 
-// ✅ Admin: list all adopted pets (always expose a stable adopt_id)
+// ✅ Admin: list all adopted pets (with basic user info)
 app.get("/admin/adopted-pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT 
-         COALESCE(ap.adopt_id, ap.id) AS adopt_id,
-         ap.*,
-         u.user_name, u.user_email
+      `SELECT ap.*, u.user_name, u.user_email
        FROM adopted_pets ap
        LEFT JOIN users u ON ap.user_id = u.user_id
-       ORDER BY ap.created_at DESC`
+       ORDER BY ap.adopt_id DESC, ap.created_at DESC`
     );
     res.json({ success: true, adopted: rows });
   } catch (err) {
@@ -295,13 +295,11 @@ app.get("/admin/adopted-pets", async (_req, res) => {
   }
 });
 
-// ✅ Admin: update adoption status (alias-normalized; 'picked_up' → 'fully_adopted')
+// ✅ Admin: update adoption status (strict, normalized; 'picked_up' → 'fully_adopted')
 app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   try {
     const { adopt_id } = req.params;
-    let { adopt_status } = req.body;
 
-    // Normalize incoming values to canonical DB values
     const mapStatus = {
       pending: "pending",
       ready: "ready_for_pickup",
@@ -311,7 +309,8 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       cancelled: "cancelled",
     };
 
-    const canonical = mapStatus[String(adopt_status || "").toLowerCase()];
+    const incoming = String(req.body.adopt_status || "").toLowerCase();
+    const canonical = mapStatus[incoming];
     if (!canonical) {
       return res.json({
         success: false,
@@ -320,11 +319,8 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       });
     }
 
-    // Update by either adopt_id or id (covers both schema variants)
     const result = await pool.query(
-      `UPDATE adopted_pets
-         SET adopt_status = $1
-       WHERE adopt_id = $2 OR id = $2`,
+      `UPDATE adopted_pets SET adopt_status = $1 WHERE adopt_id = $2`,
       [canonical, adopt_id]
     );
 
@@ -332,7 +328,7 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       return res.status(404).json({ success: false, message: "Adoption not found" });
     }
 
-    return res.json({
+    res.json({
       success: true,
       message: `Adoption status updated to '${canonical}'.`,
       adopt_status: canonical,
@@ -472,11 +468,12 @@ app.post("/capture-paypal-order", async (req, res) => {
     }
 
     const pet = petRes.rows[0];
+    const adopt_status = "pending"; // always start pending
 
     await pool.query(
       `INSERT INTO adopted_pets 
         (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, adopt_status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
       [
         user_id,
         pet.pet_id,
@@ -486,6 +483,7 @@ app.post("/capture-paypal-order", async (req, res) => {
         pet.pet_image ?? null,
         pet.pet_price ?? 0,
         adopt_type ?? "full",
+        adopt_status,
       ]
     );
 
