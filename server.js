@@ -264,18 +264,38 @@ app.get("/my-adopted/:user_id", async (req, res) => {
   }
 });
 
-// --- PayPal Routes ---
-const PAYPAL_API_BASE =
-  process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
-
+// --- PayPal (OAuth helper) ---
+const PAYPAL_API_BASE = process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
 console.log(
   `🪙 PayPal API base: ${PAYPAL_API_BASE.includes("sandbox") ? "SANDBOX" : "LIVE"} (${PAYPAL_API_BASE})`
 );
-console.log("🪙 PayPal:", {
+console.log("🪙 PayPal env:", {
   API: process.env.PAYPAL_API,
   RETURN_URL: process.env.PAYPAL_RETURN_URL,
   CANCEL_URL: process.env.PAYPAL_CANCEL_URL,
 });
+
+async function getPayPalAccessToken() {
+  const basic = Buffer.from(
+    `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+  ).toString("base64");
+
+  const resp = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Basic ${basic}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    console.error("❌ PayPal token error", resp.status, data);
+    throw new Error(`PayPal token failed: ${resp.status}`);
+  }
+  return data.access_token;
+}
 
 // ✅ Create PayPal order (returns {success, id, approveUrl, data})
 app.post("/create-paypal-order", async (req, res) => {
@@ -290,20 +310,18 @@ app.post("/create-paypal-order", async (req, res) => {
       return res.status(500).json({ success: false, message: "PayPal env vars not configured." });
     }
 
-    const auth = Buffer.from(
-      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
-    ).toString("base64");
+    const accessToken = await getPayPalAccessToken();
 
     // Build absolute return/cancel URLs from the real request host
     const baseReturn = `${req.protocol}://${req.get("host")}`;
     const return_url = `${baseReturn}/paypal-return`;
     const cancel_url = `${baseReturn}/paypal-cancel`;
 
-    const response = await fetch(`${process.env.PAYPAL_API}/v2/checkout/orders`, {
+    const resp = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
+        "Authorization": `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
         intent: "CAPTURE",
@@ -322,9 +340,9 @@ app.post("/create-paypal-order", async (req, res) => {
       }),
     });
 
-    const data = await response.json();
-    if (!response.ok) {
-      console.error("❌ PayPal create order failed:", data);
+    const data = await resp.json();
+    if (!resp.ok) {
+      console.error("❌ PayPal create order failed:", resp.status, data);
       return res.status(400).json({ success: false, data });
     }
 
@@ -339,36 +357,6 @@ app.post("/create-paypal-order", async (req, res) => {
   } catch (err) {
     console.error("❌ PayPal order error:", err);
     return res.status(500).json({ success: false, message: "Failed to create PayPal order" });
-  }
-});
-
-// 🔎 PayPal: get order status (for polling)
-app.get("/paypal-order/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET) {
-      return res.status(500).json({ success: false, message: "PayPal env vars not configured." });
-    }
-
-    const auth = Buffer.from(
-      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
-    ).toString("base64");
-
-    const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${id}`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Basic ${auth}`,
-      },
-    });
-
-    const data = await response.json();
-    // Always return 200 with payload so the app can decide; include ok flag
-    return res.json({ success: response.ok, data });
-  } catch (err) {
-    console.error("❌ PayPal get order error:", err);
-    return res.status(500).json({ success: false, message: "Failed to get PayPal order" });
   }
 });
 
@@ -387,25 +375,23 @@ app.post("/capture-paypal-order", async (req, res) => {
       return res.status(500).json({ success: false, message: "PayPal env vars not configured." });
     }
 
-    const auth = Buffer.from(
-      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
-    ).toString("base64");
+    const accessToken = await getPayPalAccessToken();
 
-    const response = await fetch(
+    const resp = await fetch(
       `${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Basic ${auth}`,
+          "Authorization": `Bearer ${accessToken}`,
         },
       }
     );
 
-    const data = await response.json();
+    const data = await resp.json();
 
-    if (!response.ok || data.status !== "COMPLETED") {
-      console.error("❌ PayPal capture failed:", data);
+    if (!resp.ok || data.status !== "COMPLETED") {
+      console.error("❌ PayPal capture failed:", resp.status, data);
       return res.status(400).json({ success: false, data });
     }
 
