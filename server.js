@@ -235,12 +235,10 @@ app.post("/adopt", async (req, res) => {
     if (rows.length === 0) return res.json({ success: false, message: "Pet not found" });
     const pet = rows[0];
 
-    const adopt_status = "pending"; // always start pending
-
     const ins = await pool.query(
       `INSERT INTO adopted_pets
        (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, adopt_status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',NOW())
        RETURNING adopt_id`,
       [
         user_id,
@@ -251,7 +249,6 @@ app.post("/adopt", async (req, res) => {
         pet.pet_image,
         pet.pet_price,
         adopt_type,
-        adopt_status,
       ]
     );
 
@@ -279,11 +276,14 @@ app.get("/my-adopted/:user_id", async (req, res) => {
   }
 });
 
-// ✅ Admin: list all adopted pets (with basic user info)
+// ✅ Admin: list all adopted pets (always expose a stable adopt_id)
 app.get("/admin/adopted-pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT ap.*, u.user_name, u.user_email
+      `SELECT 
+         COALESCE(ap.adopt_id, ap.id) AS adopt_id,
+         ap.*,
+         u.user_name, u.user_email
        FROM adopted_pets ap
        LEFT JOIN users u ON ap.user_id = u.user_id
        ORDER BY ap.created_at DESC`
@@ -295,7 +295,7 @@ app.get("/admin/adopted-pets", async (_req, res) => {
   }
 });
 
-// ✅ Admin: update adoption status (alias-normalized, 'picked_up' → 'fully_adopted')
+// ✅ Admin: update adoption status (alias-normalized; 'picked_up' → 'fully_adopted')
 app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   try {
     const { adopt_id } = req.params;
@@ -320,7 +320,7 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       });
     }
 
-    // Update by either adopt_id or id (handles different schemas)
+    // Update by either adopt_id or id (covers both schema variants)
     const result = await pool.query(
       `UPDATE adopted_pets
          SET adopt_status = $1
@@ -472,12 +472,11 @@ app.post("/capture-paypal-order", async (req, res) => {
     }
 
     const pet = petRes.rows[0];
-    const adopt_status = "pending"; // always start pending
 
     await pool.query(
       `INSERT INTO adopted_pets 
         (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, adopt_status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', NOW())`,
       [
         user_id,
         pet.pet_id,
@@ -487,7 +486,6 @@ app.post("/capture-paypal-order", async (req, res) => {
         pet.pet_image ?? null,
         pet.pet_price ?? 0,
         adopt_type ?? "full",
-        adopt_status,
       ]
     );
 
