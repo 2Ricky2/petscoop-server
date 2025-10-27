@@ -539,6 +539,121 @@ app.get("/paypal-cancel", (_req, res) => {
 </body></html>`);
 });
 
+// --- Stray Reports (create + list) ------------------------------------------
+
+// Make sure you still have:  const upload = multer({ storage, fileFilter });
+// We will reuse it here to accept a single image called "photo"
+
+app.post("/report-stray", upload.single("photo"), async (req, res) => {
+  try {
+    const { user_id, description, lat, lng, address } = req.body;
+
+    // Basic validation
+    if (!user_id || !lat || !lng) {
+      return res.status(400).json({ success: false, message: "user_id, lat and lng are required." });
+    }
+
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      return res.status(400).json({ success: false, message: "Invalid coordinates." });
+    }
+
+    // Build photo URL if a file was uploaded
+    const photo_url = req.file
+      ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
+      : null;
+
+    // Default status: pending
+    const status = "pending";
+
+    // Insert
+    const insertSql = `
+      INSERT INTO stray_reports
+        (user_id, description, lat, lng, address, photo_url, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      RETURNING report_id
+    `;
+    const { rows } = await pool.query(insertSql, [
+      Number(user_id),
+      description ?? null,
+      latNum,
+      lngNum,
+      address ?? null,
+      photo_url,
+      status,
+    ]);
+
+    return res.json({
+      success: true,
+      message: "Report submitted.",
+      report_id: rows[0].report_id,
+      photo_url,
+    });
+  } catch (err) {
+    console.error("❌ /report-stray error:", err);
+    return res.status(500).json({ success: false, message: "Failed to submit report." });
+  }
+});
+
+// User’s own reports
+app.get("/my-stray-reports/:user_id", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM stray_reports
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [req.params.user_id]
+    );
+    return res.json({ success: true, reports: rows });
+  } catch (err) {
+    console.error("❌ /my-stray-reports error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load reports." });
+  }
+});
+
+// Admin list + status update (optional now; handy for dashboard)
+app.get("/admin/stray-reports", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT sr.*, u.user_name, u.user_email
+       FROM stray_reports sr
+       LEFT JOIN users u ON u.user_id = sr.user_id
+       ORDER BY sr.created_at DESC`
+    );
+    return res.json({ success: true, reports: rows });
+  } catch (err) {
+    console.error("❌ /admin/stray-reports error:", err);
+    return res.status(500).json({ success: false, message: "Failed to load reports." });
+  }
+});
+
+app.put("/admin/stray-reports/:report_id/status", async (req, res) => {
+  try {
+    const { report_id } = req.params;
+    const { status } = req.body; // e.g. pending | seen | resolved
+
+    const allowed = ["pending", "seen", "resolved", "cancelled"];
+    if (!allowed.includes(String(status || "").toLowerCase())) {
+      return res.json({ success: false, message: "Invalid status." });
+    }
+
+    const r = await pool.query(
+      `UPDATE stray_reports SET status = $1 WHERE report_id = $2`,
+      [status.toLowerCase(), report_id]
+    );
+    if (r.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "Report not found." });
+    }
+    return res.json({ success: true, message: "Status updated." });
+  } catch (err) {
+    console.error("❌ Update stray status error:", err);
+    return res.status(500).json({ success: false, message: "Failed to update status." });
+  }
+});
+
+
+
 // --- Root ---
 app.get("/", (_req, res) => {
   res.send("🐾 Petscoop PostgreSQL Server is running successfully!");
