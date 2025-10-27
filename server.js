@@ -126,7 +126,6 @@ app.post("/login", async (req, res) => {
 });
 
 // --- Pet Routes ---
-// Hide adopted pets from user-facing AdoptPage
 app.get("/pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -142,7 +141,6 @@ app.get("/pets", async (_req, res) => {
   }
 });
 
-// ✅ Add new pet
 app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   const { pet_name, pet_desc, pet_breed, pet_price } = req.body;
   const imagePath = req.file
@@ -168,7 +166,6 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   }
 });
 
-// ✅ Update pet info (including price)
 app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
   try {
     const { pet_name, pet_desc, pet_breed, pet_price } = req.body;
@@ -215,7 +212,6 @@ app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
   }
 });
 
-// ✅ Delete pet
 app.delete("/pets/:id", async (req, res) => {
   try {
     await pool.query("DELETE FROM pets WHERE pet_id=$1", [req.params.id]);
@@ -227,7 +223,6 @@ app.delete("/pets/:id", async (req, res) => {
 });
 
 // --- Adoption Routes ---
-// Manual (non-PayPal) adoption — start as PENDING and hide pet
 app.post("/adopt", async (req, res) => {
   const { user_id, pet_id, adopt_type } = req.body;
   try {
@@ -255,7 +250,6 @@ app.post("/adopt", async (req, res) => {
       ]
     );
 
-    // mark as adopted so it no longer shows in user AdoptPage
     await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [pet_id]);
 
     res.json({
@@ -269,7 +263,6 @@ app.post("/adopt", async (req, res) => {
   }
 });
 
-// ✅ Fetch user's adopted pets
 app.get("/my-adopted/:user_id", async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -283,7 +276,6 @@ app.get("/my-adopted/:user_id", async (req, res) => {
   }
 });
 
-// ✅ Admin: list all adopted pets (with basic user info)
 app.get("/admin/adopted-pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -314,7 +306,6 @@ app.get("/admin/adopted-pets", async (_req, res) => {
   }
 });
 
-// ✅ Admin: update adoption status (alias-normalized, 'picked_up' → 'fully_adopted')
 app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   try {
     const { adopt_id } = req.params;
@@ -324,7 +315,7 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       pending: "pending",
       ready: "ready_for_pickup",
       ready_for_pickup: "ready_for_pickup",
-      picked_up: "fully_adopted",     // normalize picked_up → fully_adopted
+      picked_up: "fully_adopted",
       fully_adopted: "fully_adopted",
       cancelled: "cancelled",
     };
@@ -371,7 +362,6 @@ console.log("🪙 PayPal:", {
   CANCEL_URL: process.env.PAYPAL_CANCEL_URL,
 });
 
-// ✅ Create PayPal order
 app.post("/create-paypal-order", async (req, res) => {
   try {
     const { amount } = req.body;
@@ -388,7 +378,6 @@ app.post("/create-paypal-order", async (req, res) => {
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64");
 
-    // Build absolute return/cancel URLs from the real request host
     const baseReturn = `${req.protocol}://${req.get("host")}`;
     const return_url = `${baseReturn}/paypal-return`;
     const cancel_url = `${baseReturn}/paypal-cancel`;
@@ -436,7 +425,6 @@ app.post("/create-paypal-order", async (req, res) => {
   }
 });
 
-// ✅ Capture + record adoption — start as PENDING and hide pet
 app.post("/capture-paypal-order", async (req, res) => {
   try {
     const { orderID, user_id, pet_id, adopt_type } = req.body;
@@ -487,7 +475,7 @@ app.post("/capture-paypal-order", async (req, res) => {
     }
 
     const pet = petRes.rows[0];
-    const adopt_status = "pending"; // always start pending
+    const adopt_status = "pending";
 
     await pool.query(
       `INSERT INTO adopted_pets 
@@ -506,7 +494,6 @@ app.post("/capture-paypal-order", async (req, res) => {
       ]
     );
 
-    // mark pet as adopted so it disappears from user list
     await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [pet_id]);
 
     console.log(
@@ -520,7 +507,7 @@ app.post("/capture-paypal-order", async (req, res) => {
   }
 });
 
-// --- PayPal return/cancel pages (for WebView redirect) ---
+// --- PayPal return/cancel pages ---
 app.get("/paypal-return", (_req, res) => {
   res.type("html").send(`<!doctype html>
 <html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
@@ -540,7 +527,6 @@ app.get("/paypal-cancel", (_req, res) => {
 });
 
 // ======================= STRAY REPORTS =======================
-// helpers for stray reports
 function toNumber(n) {
   const v = parseFloat(n);
   return Number.isFinite(v) ? v : null;
@@ -554,6 +540,12 @@ function validLatLng(lat, lng) {
     lng >= -180 &&
     lng <= 180
   );
+}
+function toAbsoluteUrl(req, maybeUrl) {
+  if (!maybeUrl) return null;
+  if (/^https?:\/\//i.test(maybeUrl)) return maybeUrl;
+  const base = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+  return `${base}${maybeUrl.startsWith("/") ? "" : "/"}${maybeUrl}`;
 }
 async function saveBase64ImageToUploads(base64Str, req) {
   try {
@@ -574,9 +566,7 @@ async function saveBase64ImageToUploads(base64Str, req) {
       (mime.includes("webp") && ".webp") ||
       (mime.includes("jpg") || mime.includes("jpeg") ? ".jpg" : ".jpg");
 
-    const fname = `stray_${Date.now()}_${Math.random()
-      .toString(36)
-      .slice(2)}${ext}`;
+    const fname = `stray_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
     await fs.promises.writeFile(path.join(uploadDir, fname), buf);
     return `${req.protocol}://${req.get("host")}/uploads/${fname}`;
   } catch (e) {
@@ -589,8 +579,6 @@ async function saveBase64ImageToUploads(base64Str, req) {
 app.post("/report-stray", async (req, res) => {
   try {
     const body = req.body || {};
-    console.log("📫 /report-stray body keys:", Object.keys(body));
-
     const user_id = body.user_id;
     const description = body.description ?? null;
     const address = body.address ?? null;
@@ -632,7 +620,6 @@ app.post("/report-stray", async (req, res) => {
       photo_url,
     ]);
 
-    console.log("✅ stray report created id:", rows[0].report_id);
     return res.json({ success: true, report_id: rows[0].report_id });
   } catch (err) {
     console.error("❌ /report-stray error:", err);
@@ -640,12 +627,10 @@ app.post("/report-stray", async (req, res) => {
   }
 });
 
-// Multipart route: form-data with fields (user_id, description, lat|latitude, lng|longitude, address) and file "photo"
+// Multipart route
 app.post("/report-stray-upload", upload.single("photo"), async (req, res) => {
   try {
     const f = req.body || {};
-    console.log("📫 /report-stray-upload body keys:", Object.keys(f), "file?", !!req.file);
-
     const user_id = f.user_id;
     const description = f.description ?? null;
     const address = f.address ?? null;
@@ -678,7 +663,6 @@ app.post("/report-stray-upload", upload.single("photo"), async (req, res) => {
       [Number(user_id), description, latNum, lngNum, address, photo_url]
     );
 
-    console.log("✅ stray report (multipart) created id:", rows[0].report_id);
     return res.json({ success: true, report_id: rows[0].report_id });
   } catch (err) {
     console.error("❌ /report-stray-upload error:", err);
@@ -703,7 +687,7 @@ app.get("/my-stray-reports/:user_id", async (req, res) => {
   }
 });
 
-// Admin: list all reports
+// Admin: legacy list (kept for compatibility)
 app.get("/admin/stray-reports", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -719,7 +703,62 @@ app.get("/admin/stray-reports", async (_req, res) => {
   }
 });
 
-// Admin: update status (pending | in_review | resolved | dismissed)
+// 🆕 Admin: paginated list expected by the app (GET /admin/strays?page=1&limit=20)
+app.get("/admin/strays", async (req, res) => {
+  try {
+    const page  = Math.max(1, Number(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
+
+    const listSql = `
+      SELECT
+        sr.report_id,
+        sr.user_id,
+        sr.description,
+        sr.lat,
+        sr.lng,
+        sr.address,
+        sr.photo_url,
+        sr.created_at,
+        u.user_name
+      FROM stray_reports sr
+      LEFT JOIN users u ON u.user_id = sr.user_id
+      ORDER BY sr.created_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+    const countSql = `SELECT COUNT(*)::int AS total FROM stray_reports`;
+
+    const [listRes, countRes] = await Promise.all([
+      pool.query(listSql, [limit, offset]),
+      pool.query(countSql),
+    ]);
+
+    const total = countRes.rows?.[0]?.total ?? 0;
+    const data = (listRes.rows || []).map(r => ({
+      id: r.report_id,
+      user_id: r.user_id,
+      description: r.description,
+      lat: r.lat,
+      lng: r.lng,
+      address: r.address,
+      photo_url: toAbsoluteUrl(req, r.photo_url),
+      created_at: r.created_at,
+      reporter_name: r.user_name || null,
+    }));
+
+    res.json({
+      data,
+      page,
+      total,
+      has_more: page * limit < total,
+    });
+  } catch (err) {
+    console.error("❌ /admin/strays error:", err);
+    return res.status(500).json({ error: "Failed to fetch reports." });
+  }
+});
+
+// Admin: update status
 app.put("/admin/stray-reports/:report_id/status", async (req, res) => {
   try {
     const { report_id } = req.params;
