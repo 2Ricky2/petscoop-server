@@ -279,14 +279,27 @@ app.get("/my-adopted/:user_id", async (req, res) => {
   }
 });
 
-// ✅ Admin: list all adopted pets (with basic user info)
+// ✅ Admin: list all adopted pets (always include a usable adopt_id)
 app.get("/admin/adopted-pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT ap.*, u.user_name, u.user_email
+      `SELECT
+         COALESCE(ap.adopt_id, ap.id)         AS adopt_id,
+         ap.user_id,
+         ap.pet_id,
+         ap.pet_name,
+         ap.pet_desc,
+         ap.pet_breed,
+         ap.pet_image,
+         ap.pet_price,
+         ap.adopt_type,
+         ap.adopt_status,
+         ap.created_at,
+         u.user_name,
+         u.user_email
        FROM adopted_pets ap
        LEFT JOIN users u ON ap.user_id = u.user_id
-       ORDER BY ap.adopt_id DESC, ap.created_at DESC`
+       ORDER BY ap.created_at DESC`
     );
     res.json({ success: true, adopted: rows });
   } catch (err) {
@@ -295,7 +308,7 @@ app.get("/admin/adopted-pets", async (_req, res) => {
   }
 });
 
-// ✅ Admin: update adoption status (strict, normalized; 'picked_up' → 'fully_adopted')
+// ✅ Admin: update adoption status (robust to adopt_id/id schemas)
 app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   try {
     const { adopt_id } = req.params;
@@ -319,12 +332,29 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    // Try update by adopt_id
+    let rowCount = 0;
+    const r1 = await pool.query(
       `UPDATE adopted_pets SET adopt_status = $1 WHERE adopt_id = $2`,
       [canonical, adopt_id]
     );
+    rowCount = r1.rowCount;
 
-    if (result.rowCount === 0) {
+    // If nothing updated, try legacy 'id' column (and ignore if column doesn't exist)
+    if (rowCount === 0) {
+      try {
+        const r2 = await pool.query(
+          `UPDATE adopted_pets SET adopt_status = $1 WHERE id = $2`,
+          [canonical, adopt_id]
+        );
+        rowCount = r2.rowCount;
+      } catch (e) {
+        // 42703 = undefined_column (means 'id' column doesn't exist) -> ignore
+        if (e.code !== "42703") throw e;
+      }
+    }
+
+    if (rowCount === 0) {
       return res.status(404).json({ success: false, message: "Adoption not found" });
     }
 
