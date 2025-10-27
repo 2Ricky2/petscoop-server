@@ -361,6 +361,7 @@ app.post("/create-paypal-order", async (req, res) => {
 });
 
 // ✅ Capture + record adoption
+// ✅ Capture + record adoption (idempotent; treats already-captured as success)
 app.post("/capture-paypal-order", async (req, res) => {
   try {
     const { orderID, user_id, pet_id, adopt_type } = req.body;
@@ -377,27 +378,60 @@ app.post("/capture-paypal-order", async (req, res) => {
 
     const accessToken = await getPayPalAccessToken();
 
-    const resp = await fetch(
-      `${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${accessToken}`,
-        },
+    // Helper to fetch order details (for already-captured case)
+    const fetchOrder = async () => {
+      const r = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const j = await r.json();
+      return { ok: r.ok, data: j };
+    };
+
+    // Try to capture
+    const resp = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    let data = await resp.json();
+
+    // Treat "already captured" as success
+    if (!resp.ok) {
+      const isAlreadyCaptured =
+        data?.name === "UNPROCESSABLE_ENTITY" &&
+        Array.isArray(data?.details) &&
+        data.details.some((d) => d.issue === "ORDER_ALREADY_CAPTURED");
+
+      if (!isAlreadyCaptured) {
+        console.error("❌ PayPal capture failed:", resp.status, data);
+        return res.status(400).json({ success: false, data });
       }
-    );
 
-    const data = await resp.json();
+      // Fetch order details to read amounts/status
+      const ord = await fetchOrder();
+      if (!ord.ok) {
+        console.error("❌ Failed to fetch captured order details:", ord.data);
+        return res.status(400).json({ success: false, data: ord.data });
+      }
+      data = ord.data;
+    }
 
-    if (!resp.ok || data.status !== "COMPLETED") {
-      console.error("❌ PayPal capture failed:", resp.status, data);
+    // At this point, order is completed or was already completed.
+    const status = data?.status;
+    if (status !== "COMPLETED") {
+      console.error("❌ Order not completed:", status, data);
       return res.status(400).json({ success: false, data });
     }
 
     const paidAmount =
-      data?.purchase_units?.[0]?.payments?.captures?.[0]?.amount?.value ?? null;
+      data?.purchase_units?.[0]?.payments?.captures?.[0]?.amount?.value ??
+      data?.purchase_units?.[0]?.amount?.value ??
+      null;
 
+    // Ensure pet exists
     const petRes = await pool.query("SELECT * FROM pets WHERE pet_id = $1", [pet_id]);
     if (petRes.rows.length === 0) {
       console.warn("⚠️ Pet not found, but capture succeeded. orderID:", orderID);
@@ -407,28 +441,37 @@ app.post("/capture-paypal-order", async (req, res) => {
         data,
       });
     }
-
     const pet = petRes.rows[0];
 
-    await pool.query(
-      `INSERT INTO adopted_pets 
-        (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
-      [
-        user_id,
-        pet.pet_id,
-        pet.pet_name,
-        pet.pet_desc,
-        pet.pet_breed ?? null,
-        pet.pet_image ?? null,
-        pet.pet_price ?? 0,
-        adopt_type ?? "full",
-      ]
+    // ✅ Idempotency: don’t insert duplicate adoption for same user+pet
+    const existing = await pool.query(
+      "SELECT 1 FROM adopted_pets WHERE user_id=$1 AND pet_id=$2 LIMIT 1",
+      [user_id, pet_id]
     );
-
-    console.log(
-      `🐾 Adoption logged (order ${orderID}) pet_id=${pet_id} user_id=${user_id}, type=${adopt_type}, paid=${paidAmount}`
-    );
+    if (existing.rowCount === 0) {
+      await pool.query(
+        `INSERT INTO adopted_pets
+          (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+        [
+          user_id,
+          pet.pet_id,
+          pet.pet_name,
+          pet.pet_desc,
+          pet.pet_breed ?? null,
+          pet.pet_image ?? null,
+          pet.pet_price ?? 0,
+          adopt_type ?? "full",
+        ]
+      );
+      console.log(
+        `🐾 Adoption logged (order ${orderID}) pet_id=${pet_id} user_id=${user_id}, type=${adopt_type}, paid=${paidAmount}`
+      );
+    } else {
+      console.log(
+        `ℹ️ Adoption already recorded (user_id=${user_id}, pet_id=${pet_id}).`
+      );
+    }
 
     return res.json({ success: true, data });
   } catch (err) {
@@ -436,6 +479,7 @@ app.post("/capture-paypal-order", async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to capture PayPal order" });
   }
 });
+
 
 // --- PayPal return/cancel pages (for WebView redirect) ---
 app.get("/paypal-return", (req, res) => {
