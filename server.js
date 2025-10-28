@@ -432,8 +432,13 @@ app.delete("/users/:id", async (req, res) => {
   }
 });
 
-
 // ============================ PAYPAL =========================
+
+// Base (Sandbox by default). Set PAYPAL_API to "https://api-m.paypal.com" for Live.
+const PAYPAL_API_BASE = process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
+
+// Deep links for your app (prefer deep links so the app auto-resumes after approval)
+// If you want web fallbacks instead, point these to https://<your-server>/paypal-return|cancel
 const RETURN_URL = process.env.PAYPAL_RETURN_URL || "petscoop://paypal/return";
 const CANCEL_URL = process.env.PAYPAL_CANCEL_URL || "petscoop://paypal/cancel";
 
@@ -442,36 +447,30 @@ console.log(
 );
 console.log("🪙 PayPal return/cancel:", { RETURN_URL, CANCEL_URL });
 
+// OAuth (Bearer) for PayPal v2
 async function getPayPalAccessToken() {
-  if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_SECRET) {
-    throw new Error("PayPal credentials missing");
-  }
-  const auth = Buffer.from(
-    `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
-  ).toString("base64");
+  const id = process.env.PAYPAL_CLIENT_ID;
+  const secret = process.env.PAYPAL_SECRET;
+  if (!id || !secret) throw new Error("PayPal credentials missing (PAYPAL_CLIENT_ID/SECRET)");
 
-  const r = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+  const auth = Buffer.from(`${id}:${secret}`).toString("base64");
+  const resp = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
     method: "POST",
     headers: {
-      "Authorization": `Basic ${auth}`,
+      Authorization: `Basic ${auth}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=client_credentials",
   });
-
-  const j = await r.json();
-  if (!r.ok || !j.access_token) {
-    console.error("❌ PayPal OAuth failed:", j);
-    throw new Error(j.error_description || "PayPal OAuth failed");
+  const data = await resp.json();
+  if (!resp.ok || !data.access_token) {
+    console.error("❌ PayPal OAuth failed:", data);
+    throw new Error(data.error_description || "PayPal OAuth failed");
   }
-  return j.access_token;
+  return data.access_token;
 }
 
-/**
- * Create PayPal order
- * Body: { amount: "123.45", currency?: "PHP"|"USD"|..., reference_id?: string }
- * Returns: { success, id, approveUrl }
- */
+/** Create PayPal order */
 app.post("/create-paypal-order", async (req, res) => {
   try {
     const { amount, currency = "PHP", reference_id = `petscoop_${Date.now()}` } = req.body || {};
@@ -480,27 +479,17 @@ app.post("/create-paypal-order", async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid amount." });
     }
 
-    const accessToken = await getPayPalAccessToken();
-
+    const token = await getPayPalAccessToken();
     const resp = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${accessToken}`,
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         intent: "CAPTURE",
-        purchase_units: [
-          {
-            reference_id,
-            amount: { currency_code: currency, value: value.toFixed(2) },
-          },
-        ],
+        purchase_units: [{ reference_id, amount: { currency_code: currency, value: value.toFixed(2) } }],
         application_context: {
           brand_name: "Petscoop",
           user_action: "PAY_NOW",
           shipping_preference: "NO_SHIPPING",
-          // Deep-link straight back to the app on approve/cancel:
           return_url: RETURN_URL,
           cancel_url: CANCEL_URL,
         },
@@ -509,28 +498,22 @@ app.post("/create-paypal-order", async (req, res) => {
 
     const data = await resp.json();
     if (!resp.ok) {
-      console.error("❌ PayPal create order failed:", data);
+      console.error("❌ Create order failed:", data);
       return res.status(400).json({ success: false, message: "Create order failed", data });
     }
 
-    const approveUrl = Array.isArray(data.links)
-      ? data.links.find((l) => l.rel === "approve")?.href
-      : null;
-
-    console.log(`🪙 PayPal order created: ${data.id}`);
+    const approveUrl = (data.links || []).find((l) => l.rel === "approve")?.href || null;
+    console.log(`🪙 Order created: ${data.id}`);
     if (approveUrl) console.log(`🪪 Approve URL: ${approveUrl}`);
 
     return res.json({ success: true, id: data.id, approveUrl });
-  } catch (err) {
-    console.error("❌ PayPal order error:", err);
-    return res.status(500).json({ success: false, message: err.message || "Failed to create PayPal order" });
+  } catch (e) {
+    console.error("❌ /create-paypal-order error:", e);
+    return res.status(500).json({ success: false, message: e.message || "Server error" });
   }
 });
 
-/**
- * Capture PayPal order
- * Body: { orderID, user_id, pet_id, adopt_type }
- */
+/** Capture PayPal order */
 app.post("/capture-paypal-order", async (req, res) => {
   try {
     const { orderID, user_id, pet_id, adopt_type } = req.body || {};
@@ -539,44 +522,34 @@ app.post("/capture-paypal-order", async (req, res) => {
       return res.status(400).json({ success: false, message: "user_id and pet_id are required." });
     }
 
-    const accessToken = await getPayPalAccessToken();
-
+    const token = await getPayPalAccessToken();
     const resp = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${accessToken}`,
-      },
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     });
-
     const data = await resp.json();
 
     if (!resp.ok || data.status !== "COMPLETED") {
-      console.error("❌ PayPal capture failed:", data);
+      console.error("❌ Capture failed:", data);
       return res.status(400).json({ success: false, message: "Capture failed", data });
     }
 
-    // Optional read: total paid (string)
+    // Optional: grab paid amount
     const paidAmount = data?.purchase_units?.[0]?.payments?.captures?.[0]?.amount?.value ?? null;
 
-    // Record adoption
+    // Record adoption in DB
     const petRes = await pool.query("SELECT * FROM pets WHERE pet_id = $1", [pet_id]);
     if (petRes.rows.length === 0) {
-      console.warn("⚠️ Pet not found, but capture succeeded. orderID:", orderID);
-      return res.json({
-        success: true,
-        message: "Payment captured, but pet not found. No adoption recorded.",
-        data,
-      });
+      console.warn("⚠️ Pet not found (capture ok). orderID:", orderID);
+      return res.json({ success: true, message: "Payment captured; pet not found.", data });
     }
-
     const pet = petRes.rows[0];
-    const adopt_status = "pending";
 
     await pool.query(
       `INSERT INTO adopted_pets 
-        (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price, adopt_type, adopt_status, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+         (user_id, pet_id, pet_name, pet_desc, pet_breed, pet_image, pet_price,
+          adopt_type, adopt_status, created_at, payment_reference, payment_method, paid_amount)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',NOW(),$9,'paypal',$10)`,
       [
         user_id,
         pet.pet_id,
@@ -586,22 +559,29 @@ app.post("/capture-paypal-order", async (req, res) => {
         pet.pet_image ?? null,
         pet.pet_price ?? 0,
         adopt_type ?? "full",
-        adopt_status,
+        orderID,
+        paidAmount,
       ]
     );
 
     await pool.query("UPDATE pets SET is_adopted = true WHERE pet_id = $1", [pet_id]);
 
-    console.log(
-      `🐾 Adoption logged (order ${orderID}) pet_id=${pet_id} user_id=${user_id}, type=${adopt_type}, paid=${paidAmount}`
-    );
-
+    console.log(`🐾 Adoption logged (order ${orderID}) pet_id=${pet_id} user_id=${user_id} type=${adopt_type} paid=${paidAmount}`);
     return res.json({ success: true, data });
-  } catch (err) {
-    console.error("❌ PayPal capture error:", err);
-    return res.status(500).json({ success: false, message: err.message || "Failed to capture PayPal order" });
+  } catch (e) {
+    console.error("❌ /capture-paypal-order error:", e);
+    return res.status(500).json({ success: false, message: e.message || "Server error" });
   }
 });
+
+// Optional web fallbacks (not used if you use deep links)
+app.get("/paypal-return", (_req, res) => {
+  res.type("html").send(`<!doctype html><html><body><h3>Payment approved</h3><p>You can close this window and return to the app.</p></body></html>`);
+});
+app.get("/paypal-cancel", (_req, res) => {
+  res.type("html").send(`<!doctype html><html><body><h3>Payment cancelled</h3><p>You can close this window and return to the app.</p></body></html>`);
+});
+
 
 // --- Optional web fallbacks (not used with deep links, kept for safety) ---
 app.get("/paypal-return", (_req, res) => {
