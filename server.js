@@ -692,73 +692,10 @@ app.get("/admin/stray-reports", async (_req, res) => {
   }
 });
 
-// 🆕 Admin: paginated list with status filter (GET /admin/strays?page=1&limit=20&status=resolved|pending|in_review|dismissed|all)
-app.get("/admin/strays", async (req, res) => {
-  try {
-    const page  = Math.max(1, Number(req.query.page)  || 1);
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
-    const offset = (page - 1) * limit;
-
-    const allowed = ["pending","in_review","resolved","dismissed","all"];
-    const status = String(req.query.status || "all").toLowerCase();
-    const filterAll = !allowed.includes(status) || status === "all";
-
-    const whereClause = filterAll ? "" : "WHERE sr.status = $3";
-
-    const listSql = `
-      SELECT
-        sr.report_id,
-        sr.user_id,
-        sr.description,
-        sr.lat,
-        sr.lng,
-        sr.address,
-        sr.photo_url,
-        sr.status,
-        sr.created_at,
-        u.user_name
-      FROM stray_reports sr
-      LEFT JOIN users u ON u.user_id = sr.user_id
-      ${whereClause}
-      ORDER BY sr.created_at DESC
-      LIMIT $1 OFFSET $2
-    `;
-    const countSql = `
-      SELECT COUNT(*)::int AS total
-      FROM stray_reports sr
-      ${whereClause}
-    `;
-
-    const paramsList = filterAll ? [limit, offset] : [limit, offset, status];
-    const paramsCount = filterAll ? [] : [status];
-
-    const [listRes, countRes] = await Promise.all([
-      pool.query(listSql, paramsList),
-      pool.query(countSql, paramsCount),
-    ]);
-
-    const total = countRes.rows?.[0]?.total ?? 0;
-    const data = (listRes.rows || []).map(r => ({
-      id: r.report_id,
-      user_id: r.user_id,
-      description: r.description,
-      lat: r.lat,
-      lng: r.lng,
-      address: r.address,
-      photo_url: toAbsoluteUrl(req, r.photo_url),
-      created_at: r.created_at,
-      status: r.status,
-      reporter_name: r.user_name || null,
-    }));
-
-    res.json({ data, page, total, has_more: page * limit < total });
-  } catch (err) {
-    console.error("❌ /admin/strays error:", err);
-    return res.status(500).json({ error: "Failed to fetch reports." });
-  }
-});
-
-// 🆕 Admin: paginated list with status filter (GET /admin/strays?page=1&limit=20&status=active|pending|in_review|resolved|dismissed|all)
+/**
+ * Admin: paginated list with status filter
+ * GET /admin/strays?page=1&limit=20&status=all|active|pending|in_review|resolved|dismissed
+ */
 app.get("/admin/strays", async (req, res) => {
   try {
     const page  = Math.max(1, Number(req.query.page)  || 1);
@@ -766,7 +703,7 @@ app.get("/admin/strays", async (req, res) => {
     const status = String(req.query.status || "all").toLowerCase();
     const offset = (page - 1) * limit;
 
-    // Build WHERE clause from status
+    // Build WHERE safely (avoid mismatched $ params → 42P18)
     let where = "";
     const whereVals = [];
     if (status === "active") {
@@ -820,12 +757,7 @@ app.get("/admin/strays", async (req, res) => {
       reporter_name: r.user_name || null,
     }));
 
-    res.json({
-      data,
-      page,
-      total,
-      has_more: page * limit < total,
-    });
+    res.json({ data, page, total, has_more: page * limit < total });
   } catch (err) {
     console.error("❌ /admin/strays error:", err);
     return res.status(500).json({ error: "Failed to fetch reports." });
@@ -875,7 +807,7 @@ app.post("/admin/stray-reports", async (req, res) => {
     const lat = Number(b.lat);
     const lng = Number(b.lng);
     const address = (b.address || "").trim() || null;
-    const status = (String(b.status || "pending").toLowerCase());
+    const status = String(b.status || "pending").toLowerCase();
     const photo_url = b.photo_url || null;
 
     if (!user_id || !description || !Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -908,7 +840,7 @@ app.put("/admin/stray-reports/:report_id", async (req, res) => {
     const vals = [];
     let i = 1;
 
-    function add(col, val) { fields.push(`${col} = $${i++}`); vals.push(val); }
+    const add = (col, val) => { fields.push(`${col} = $${i++}`); vals.push(val); };
 
     if (typeof b.description !== "undefined") add("description", b.description || null);
     if (typeof b.address !== "undefined")    add("address", b.address || null);
