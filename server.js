@@ -405,6 +405,34 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   }
 });
 
+// ============================ VIEW USERS =========================
+
+// List users
+app.get("/users", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT user_id, user_name, user_email, user_role FROM users ORDER BY user_id DESC"
+    );
+    res.json({ success: true, users: rows });
+  } catch (err) {
+    console.error("❌ /users error:", err);
+    res.status(500).json({ success: false, message: "Failed to fetch users" });
+  }
+});
+
+// Delete user
+app.delete("/users/:id", async (req, res) => {
+  try {
+    const { rowCount } = await pool.query("DELETE FROM users WHERE user_id = $1", [req.params.id]);
+    if (!rowCount) return res.status(404).json({ success: false, message: "User not found" });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ DELETE /users/:id error:", err);
+    res.status(500).json({ success: false, message: "Failed to delete user" });
+  }
+});
+
+
 // ============================ PAYPAL =========================
 const PAYPAL_API_BASE =
   process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
