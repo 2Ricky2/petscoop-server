@@ -583,25 +583,6 @@ app.get("/paypal-cancel", (_req, res) => {
 });
 
 
-// --- Optional web fallbacks (not used with deep links, kept for safety) ---
-app.get("/paypal-return", (_req, res) => {
-  res.type("html").send(`<!doctype html>
-<html><head><meta charset="utf-8"><title>PayPal Approved</title></head>
-<body style="font-family: sans-serif; padding:24px">
-  <h3>Payment approved</h3>
-  <p>You can close this window and return to the app.</p>
-</body></html>`);
-});
-
-app.get("/paypal-cancel", (_req, res) => {
-  res.type("html").send(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Payment Cancelled</title></head>
-<body style="font-family: sans-serif; padding:24px">
-  <h3>Payment cancelled</h3>
-  <p>You can close this window and return to the app.</p>
-</body></html>`);
-});
-
 
 // ======================= STRAY REPORTS =======================
 // User create (JSON: optional base64 photo)
