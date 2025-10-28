@@ -673,6 +673,8 @@ app.post("/report-stray-upload", upload.single("photo"), async (req, res) => {
   }
 });
 
+
+
 // User: list their own reports
 app.get("/my-stray-reports/:user_id", async (req, res) => {
   try {
@@ -689,6 +691,33 @@ app.get("/my-stray-reports/:user_id", async (req, res) => {
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 });
+
+// put this near your other routes (same server.js)
+app.put("/admin/stray-reports/:report_id/status", updateStrayStatus);
+app.post("/admin/stray-reports/:report_id/status", updateStrayStatus); // alias for quick testing
+
+async function updateStrayStatus(req, res) {
+  try {
+    const { report_id } = req.params;
+    const allowed = ["pending","in_review","resolved","dismissed"];
+    const next = String((req.body?.status || req.query?.status || "")).toLowerCase();
+
+    if (!allowed.includes(next)) {
+      return res.status(400).json({ success:false, message:`Invalid status. Allowed: ${allowed.join(", ")}` });
+    }
+
+    const { rowCount } = await pool.query(
+      "UPDATE stray_reports SET status = $1 WHERE report_id = $2",
+      [next, report_id]
+    );
+    if (rowCount === 0) return res.status(404).json({ success:false, message:"Report not found" });
+
+    res.json({ success:true, message:"Status updated", status: next });
+  } catch (err) {
+    console.error("❌ update status error:", err);
+    res.status(500).json({ success:false, message: err.message || "Server error" });
+  }
+}
 
 // Admin: legacy list (kept)
 app.get("/admin/stray-reports", async (_req, res) => {
