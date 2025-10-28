@@ -60,7 +60,7 @@ app.get("/db-check", async (_req, res) => {
   }
 });
 
-// --- File Upload ---
+// --- File Upload (for pets & stray photos) ---
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) =>
@@ -72,16 +72,70 @@ const fileFilter = (_req, file, cb) => {
 };
 const upload = multer({ storage, fileFilter });
 
-// --- Auth Routes ---
+// --- Helpers ---
+function toNumber(n) {
+  const v = parseFloat(n);
+  return Number.isFinite(v) ? v : null;
+}
+function validLatLng(lat, lng) {
+  return lat !== null && lng !== null && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+function toAbsoluteUrl(req, maybeUrl) {
+  if (!maybeUrl) return null;
+  if (/^https?:\/\//i.test(maybeUrl)) return maybeUrl;
+  const base = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+  return `${base}${maybeUrl.startsWith("/") ? "" : "/"}${maybeUrl}`;
+}
+async function saveBase64ImageToUploads(base64Str, req) {
+  try {
+    if (!base64Str) return null;
+    let mime = "image/jpeg";
+    let b64 = base64Str;
+
+    if (base64Str.startsWith("data:")) {
+      const m = base64Str.match(/^data:(.*?);base64,(.*)$/);
+      if (!m) return null;
+      mime = m[1] || "image/jpeg";
+      b64 = m[2];
+    }
+
+    const buf = Buffer.from(b64, "base64");
+    const ext =
+      (mime.includes("png") && ".png") ||
+      (mime.includes("webp") && ".webp") ||
+      (mime.includes("jpg") || mime.includes("jpeg") ? ".jpg" : ".jpg");
+
+    const fname = `stray_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+    await fs.promises.writeFile(path.join(uploadDir, fname), buf);
+    return `${req.protocol}://${req.get("host")}/uploads/${fname}`;
+  } catch (e) {
+    console.error("saveBase64ImageToUploads error:", e);
+    return null;
+  }
+}
+async function deleteLocalFileIfExists(absUrlOrPath) {
+  try {
+    if (!absUrlOrPath) return;
+    // only delete if it's in our /uploads folder
+    const url = new URL(absUrlOrPath, "http://x");
+    const filename = path.basename(url.pathname);
+    const full = path.join(uploadDir, filename);
+    if (full.startsWith(uploadDir) && fs.existsSync(full)) {
+      await fs.promises.unlink(full);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+// =========================== AUTH ============================
 app.post("/signup", async (req, res) => {
   const { user_name, user_email, user_pass } = req.body;
   if (!user_name || !user_email || !user_pass)
     return res.json({ success: false, message: "All fields required" });
 
   try {
-    const { rows } = await pool.query("SELECT 1 FROM users WHERE user_email=$1", [
-      user_email,
-    ]);
+    const { rows } = await pool.query("SELECT 1 FROM users WHERE user_email=$1", [user_email]);
     if (rows.length > 0)
       return res.json({ success: false, message: "Email already exists" });
 
@@ -103,9 +157,7 @@ app.post("/login", async (req, res) => {
     return res.json({ success: false, message: "All fields required" });
 
   try {
-    const { rows } = await pool.query("SELECT * FROM users WHERE user_email=$1", [
-      user_email,
-    ]);
+    const { rows } = await pool.query("SELECT * FROM users WHERE user_email=$1", [user_email]);
     if (rows.length === 0)
       return res.json({ success: false, message: "User not found" });
 
@@ -125,7 +177,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// --- Pet Routes ---
+// ============================ PETS ===========================
 app.get("/pets", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -150,9 +202,7 @@ app.post("/add-pet", upload.single("pet_image"), async (req, res) => {
   if (!pet_name) return res.json({ success: false, message: "Pet name required" });
 
   try {
-    const priceNum = Number.isFinite(parseFloat(pet_price))
-      ? parseFloat(pet_price)
-      : 0;
+    const priceNum = Number.isFinite(parseFloat(pet_price)) ? parseFloat(pet_price) : 0;
 
     await pool.query(
       `INSERT INTO pets (pet_name, pet_desc, pet_breed, pet_image, pet_price, is_adopted, created_at)
@@ -175,31 +225,24 @@ app.put("/pets/:id", upload.single("pet_image"), async (req, res) => {
     let i = 1;
 
     if (typeof pet_name !== "undefined" && pet_name !== "") {
-      updates.push(`pet_name=$${i++}`);
-      values.push(pet_name);
+      updates.push(`pet_name=$${i++}`); values.push(pet_name);
     }
     if (typeof pet_desc !== "undefined") {
-      updates.push(`pet_desc=$${i++}`);
-      values.push(pet_desc);
+      updates.push(`pet_desc=$${i++}`); values.push(pet_desc);
     }
     if (typeof pet_breed !== "undefined") {
-      updates.push(`pet_breed=$${i++}`);
-      values.push(pet_breed);
+      updates.push(`pet_breed=$${i++}`); values.push(pet_breed);
     }
     if (typeof pet_price !== "undefined") {
-      const priceNum = Number.isFinite(parseFloat(pet_price))
-        ? parseFloat(pet_price)
-        : 0;
-      updates.push(`pet_price=$${i++}`);
-      values.push(priceNum);
+      const priceNum = Number.isFinite(parseFloat(pet_price)) ? parseFloat(pet_price) : 0;
+      updates.push(`pet_price=$${i++}`); values.push(priceNum);
     }
     if (req.file) {
       updates.push(`pet_image=$${i++}`);
       values.push(`${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`);
     }
 
-    if (updates.length === 0)
-      return res.json({ success: false, message: "No fields to update" });
+    if (updates.length === 0) return res.json({ success: false, message: "No fields to update" });
 
     values.push(id);
     const sql = `UPDATE pets SET ${updates.join(", ")} WHERE pet_id=$${i}`;
@@ -222,7 +265,7 @@ app.delete("/pets/:id", async (req, res) => {
   }
 });
 
-// --- Adoption Routes ---
+// =========================== ADOPTION ========================
 app.post("/adopt", async (req, res) => {
   const { user_id, pet_id, adopt_type } = req.body;
   try {
@@ -230,7 +273,7 @@ app.post("/adopt", async (req, res) => {
     if (rows.length === 0) return res.json({ success: false, message: "Pet not found" });
     const pet = rows[0];
 
-    const adopt_status = "pending"; // always start pending
+    const adopt_status = "pending";
 
     const ins = await pool.query(
       `INSERT INTO adopted_pets
@@ -324,8 +367,7 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
     if (!canonical) {
       return res.json({
         success: false,
-        message:
-          "Invalid status. Allowed: pending, ready_for_pickup, fully_adopted, cancelled",
+        message: "Invalid status. Allowed: pending, ready_for_pickup, fully_adopted, cancelled",
       });
     }
 
@@ -349,7 +391,7 @@ app.put("/admin/adopted/:adopt_id/status", async (req, res) => {
   }
 });
 
-// --- PayPal Routes ---
+// ============================ PAYPAL =========================
 const PAYPAL_API_BASE =
   process.env.PAYPAL_API || "https://api-m.sandbox.paypal.com";
 
@@ -527,55 +569,7 @@ app.get("/paypal-cancel", (_req, res) => {
 });
 
 // ======================= STRAY REPORTS =======================
-function toNumber(n) {
-  const v = parseFloat(n);
-  return Number.isFinite(v) ? v : null;
-}
-function validLatLng(lat, lng) {
-  return (
-    lat !== null &&
-    lng !== null &&
-    lat >= -90 &&
-    lat <= 90 &&
-    lng >= -180 &&
-    lng <= 180
-  );
-}
-function toAbsoluteUrl(req, maybeUrl) {
-  if (!maybeUrl) return null;
-  if (/^https?:\/\//i.test(maybeUrl)) return maybeUrl;
-  const base = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
-  return `${base}${maybeUrl.startsWith("/") ? "" : "/"}${maybeUrl}`;
-}
-async function saveBase64ImageToUploads(base64Str, req) {
-  try {
-    if (!base64Str) return null;
-    let mime = "image/jpeg";
-    let b64 = base64Str;
-
-    if (base64Str.startsWith("data:")) {
-      const m = base64Str.match(/^data:(.*?);base64,(.*)$/);
-      if (!m) return null;
-      mime = m[1] || "image/jpeg";
-      b64 = m[2];
-    }
-
-    const buf = Buffer.from(b64, "base64");
-    const ext =
-      (mime.includes("png") && ".png") ||
-      (mime.includes("webp") && ".webp") ||
-      (mime.includes("jpg") || mime.includes("jpeg") ? ".jpg" : ".jpg");
-
-    const fname = `stray_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
-    await fs.promises.writeFile(path.join(uploadDir, fname), buf);
-    return `${req.protocol}://${req.get("host")}/uploads/${fname}`;
-  } catch (e) {
-    console.error("saveBase64ImageToUploads error:", e);
-    return null;
-  }
-}
-
-// JSON route: accepts { user_id, description, lat|latitude, lng|longitude, address, photo_base64? }
+// User create (JSON: optional base64 photo)
 app.post("/report-stray", async (req, res) => {
   try {
     const body = req.body || {};
@@ -612,12 +606,7 @@ app.post("/report-stray", async (req, res) => {
       RETURNING report_id
     `;
     const { rows } = await pool.query(insertSql, [
-      Number(user_id),
-      description,
-      latNum,
-      lngNum,
-      address,
-      photo_url,
+      Number(user_id), description, latNum, lngNum, address, photo_url,
     ]);
 
     return res.json({ success: true, report_id: rows[0].report_id });
@@ -627,7 +616,7 @@ app.post("/report-stray", async (req, res) => {
   }
 });
 
-// Multipart route
+// User create (multipart photo)
 app.post("/report-stray-upload", upload.single("photo"), async (req, res) => {
   try {
     const f = req.body || {};
@@ -670,7 +659,7 @@ app.post("/report-stray-upload", upload.single("photo"), async (req, res) => {
   }
 });
 
-// User: list their reports
+// User: list their own reports
 app.get("/my-stray-reports/:user_id", async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -687,7 +676,7 @@ app.get("/my-stray-reports/:user_id", async (req, res) => {
   }
 });
 
-// Admin: legacy list (kept for compatibility)
+// Admin: legacy list (kept)
 app.get("/admin/stray-reports", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -703,12 +692,18 @@ app.get("/admin/stray-reports", async (_req, res) => {
   }
 });
 
-// 🆕 Admin: paginated list expected by the app (GET /admin/strays?page=1&limit=20)
+// 🆕 Admin: paginated list with status filter (GET /admin/strays?page=1&limit=20&status=resolved|pending|in_review|dismissed|all)
 app.get("/admin/strays", async (req, res) => {
   try {
     const page  = Math.max(1, Number(req.query.page)  || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
     const offset = (page - 1) * limit;
+
+    const allowed = ["pending","in_review","resolved","dismissed","all"];
+    const status = String(req.query.status || "all").toLowerCase();
+    const filterAll = !allowed.includes(status) || status === "all";
+
+    const whereClause = filterAll ? "" : "WHERE sr.status = $3";
 
     const listSql = `
       SELECT
@@ -719,18 +714,27 @@ app.get("/admin/strays", async (req, res) => {
         sr.lng,
         sr.address,
         sr.photo_url,
+        sr.status,
         sr.created_at,
         u.user_name
       FROM stray_reports sr
       LEFT JOIN users u ON u.user_id = sr.user_id
+      ${whereClause}
       ORDER BY sr.created_at DESC
       LIMIT $1 OFFSET $2
     `;
-    const countSql = `SELECT COUNT(*)::int AS total FROM stray_reports`;
+    const countSql = `
+      SELECT COUNT(*)::int AS total
+      FROM stray_reports sr
+      ${whereClause}
+    `;
+
+    const paramsList = filterAll ? [limit, offset] : [limit, offset, status];
+    const paramsCount = filterAll ? [] : [status];
 
     const [listRes, countRes] = await Promise.all([
-      pool.query(listSql, [limit, offset]),
-      pool.query(countSql),
+      pool.query(listSql, paramsList),
+      pool.query(countSql, paramsCount),
     ]);
 
     const total = countRes.rows?.[0]?.total ?? 0;
@@ -742,6 +746,76 @@ app.get("/admin/strays", async (req, res) => {
       lng: r.lng,
       address: r.address,
       photo_url: toAbsoluteUrl(req, r.photo_url),
+      created_at: r.created_at,
+      status: r.status,
+      reporter_name: r.user_name || null,
+    }));
+
+    res.json({ data, page, total, has_more: page * limit < total });
+  } catch (err) {
+    console.error("❌ /admin/strays error:", err);
+    return res.status(500).json({ error: "Failed to fetch reports." });
+  }
+});
+
+// 🆕 Admin: paginated list with status filter (GET /admin/strays?page=1&limit=20&status=active|pending|in_review|resolved|dismissed|all)
+app.get("/admin/strays", async (req, res) => {
+  try {
+    const page  = Math.max(1, Number(req.query.page)  || 1);
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const status = String(req.query.status || "all").toLowerCase();
+    const offset = (page - 1) * limit;
+
+    // Build WHERE clause from status
+    let where = "";
+    const whereVals = [];
+    if (status === "active") {
+      where = "WHERE sr.status IN ('pending','in_review')";
+    } else if (["pending", "in_review", "resolved", "dismissed"].includes(status)) {
+      where = "WHERE sr.status = $1";
+      whereVals.push(status);
+    } // else "all" → no WHERE
+
+    const listSql = `
+      SELECT
+        sr.report_id,
+        sr.user_id,
+        sr.description,
+        sr.lat,
+        sr.lng,
+        sr.address,
+        sr.photo_url,
+        sr.status,
+        sr.created_at,
+        u.user_name
+      FROM stray_reports sr
+      LEFT JOIN users u ON u.user_id = sr.user_id
+      ${where}
+      ORDER BY sr.created_at DESC
+      LIMIT $${whereVals.length + 1} OFFSET $${whereVals.length + 2}
+    `;
+
+    const countSql = `
+      SELECT COUNT(*)::int AS total
+      FROM stray_reports sr
+      ${where}
+    `;
+
+    const [listRes, countRes] = await Promise.all([
+      pool.query(listSql, [...whereVals, limit, offset]),
+      pool.query(countSql, whereVals),
+    ]);
+
+    const total = countRes.rows?.[0]?.total ?? 0;
+    const data = (listRes.rows || []).map((r) => ({
+      id: r.report_id,
+      user_id: r.user_id,
+      description: r.description,
+      lat: r.lat,
+      lng: r.lng,
+      address: r.address,
+      photo_url: toAbsoluteUrl(req, r.photo_url),
+      status: r.status,
       created_at: r.created_at,
       reporter_name: r.user_name || null,
     }));
@@ -758,28 +832,126 @@ app.get("/admin/strays", async (req, res) => {
   }
 });
 
-// Admin: update status
-app.put("/admin/stray-reports/:report_id/status", async (req, res) => {
+// 🆕 Admin: get single report
+app.get("/admin/stray-reports/:report_id", async (req, res) => {
   try {
-    const { report_id } = req.params;
-    const allowed = ["pending", "in_review", "resolved", "dismissed"];
-    const next = String(req.body?.status || "").toLowerCase();
-    if (!allowed.includes(next)) {
-      return res.status(400).json({ success: false, message: `Invalid status. Allowed: ${allowed.join(", ")}` });
-    }
-
-    const { rowCount } = await pool.query(
-      "UPDATE stray_reports SET status = $1 WHERE report_id = $2",
-      [next, report_id]
+    const id = req.params.report_id;
+    const { rows } = await pool.query(
+      `SELECT sr.*, u.user_name
+       FROM stray_reports sr
+       LEFT JOIN users u ON u.user_id = sr.user_id
+       WHERE sr.report_id = $1`,
+      [id]
     );
-    if (rowCount === 0) return res.status(404).json({ success: false, message: "Report not found" });
-
-    return res.json({ success: true, message: "Status updated", status: next });
+    if (!rows.length) return res.status(404).json({ success: false, message: "Not found" });
+    const r = rows[0];
+    return res.json({
+      success: true,
+      report: {
+        id: r.report_id,
+        user_id: r.user_id,
+        description: r.description,
+        lat: r.lat,
+        lng: r.lng,
+        address: r.address,
+        photo_url: toAbsoluteUrl(req, r.photo_url),
+        status: r.status,
+        created_at: r.created_at,
+        reporter_name: r.user_name || null,
+      },
+    });
   } catch (err) {
-    console.error("❌ /admin/stray-reports/:id/status error:", err);
+    console.error("❌ GET /admin/stray-reports/:id error:", err);
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 });
+
+// 🆕 Admin: create report (JSON)
+app.post("/admin/stray-reports", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const user_id = Number(b.user_id);
+    const description = (b.description || "").trim();
+    const lat = Number(b.lat);
+    const lng = Number(b.lng);
+    const address = (b.address || "").trim() || null;
+    const status = (String(b.status || "pending").toLowerCase());
+    const photo_url = b.photo_url || null;
+
+    if (!user_id || !description || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ success: false, message: "user_id, description, lat, lng are required" });
+    }
+    if (!["pending","in_review","resolved","dismissed"].includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid status" });
+    }
+
+    const { rows } = await pool.query(
+      `INSERT INTO stray_reports (user_id, description, lat, lng, address, photo_url, status, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+       RETURNING report_id`,
+      [user_id, description, lat, lng, address, photo_url, status]
+    );
+
+    return res.json({ success: true, report_id: rows[0].report_id });
+  } catch (err) {
+    console.error("❌ POST /admin/stray-reports error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Server error" });
+  }
+});
+
+// 🆕 Admin: update report (JSON)
+app.put("/admin/stray-reports/:report_id", async (req, res) => {
+  try {
+    const id = req.params.report_id;
+    const b = req.body || {};
+    const fields = [];
+    const vals = [];
+    let i = 1;
+
+    function add(col, val) { fields.push(`${col} = $${i++}`); vals.push(val); }
+
+    if (typeof b.description !== "undefined") add("description", b.description || null);
+    if (typeof b.address !== "undefined")    add("address", b.address || null);
+    if (typeof b.lat !== "undefined")        add("lat", Number(b.lat));
+    if (typeof b.lng !== "undefined")        add("lng", Number(b.lng));
+    if (typeof b.photo_url !== "undefined")  add("photo_url", b.photo_url || null);
+    if (typeof b.status !== "undefined") {
+      const s = String(b.status).toLowerCase();
+      if (!["pending","in_review","resolved","dismissed"].includes(s)) {
+        return res.status(400).json({ success: false, message: "Invalid status" });
+      }
+      add("status", s);
+    }
+
+    if (!fields.length) {
+      return res.status(400).json({ success: false, message: "No fields to update" });
+    }
+
+    vals.push(id);
+    const sql = `UPDATE stray_reports SET ${fields.join(", ")} WHERE report_id = $${i}`;
+    const r = await pool.query(sql, vals);
+    if (!r.rowCount) return res.status(404).json({ success: false, message: "Not found" });
+
+    return res.json({ success: true, message: "Updated" });
+  } catch (err) {
+    console.error("❌ PUT /admin/stray-reports/:id error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Server error" });
+  }
+});
+
+// 🆕 Admin: delete report
+app.delete("/admin/stray-reports/:report_id", async (req, res) => {
+  try {
+    const id = req.params.report_id;
+    const r = await pool.query("DELETE FROM stray_reports WHERE report_id = $1", [id]);
+    if (!r.rowCount) return res.status(404).json({ success: false, message: "Not found" });
+    return res.json({ success: true, message: "Deleted" });
+  } catch (err) {
+    console.error("❌ DELETE /admin/stray-reports/:id error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Server error" });
+  }
+});
+
 
 // --- Root ---
 app.get("/", (_req, res) => {
