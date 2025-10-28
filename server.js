@@ -128,6 +128,20 @@ async function deleteLocalFileIfExists(absUrlOrPath) {
   }
 }
 
+const DB_STATUS = ["pending", "in-review", "resolved", "dismissed"];
+
+function normalizeStatus(input) {
+  const s = String(input || "").toLowerCase().trim();
+  const map = {
+    "in_review": "in-review",
+    "inreview": "in-review",
+    "in-review": "in-review",
+    "review": "in-review",
+  };
+  const out = map[s] || s;
+  return DB_STATUS.includes(out) ? out : null;
+}
+
 // =========================== AUTH ============================
 app.post("/signup", async (req, res) => {
   const { user_name, user_email, user_pass } = req.body;
@@ -694,53 +708,41 @@ app.get("/admin/stray-reports", async (_req, res) => {
 
 /**
  * Admin: paginated list with status filter
- * GET /admin/strays?page=1&limit=20&status=all|active|pending|in_review|resolved|dismissed
+ * GET /admin/strays?page=1&limit=20&status=all|active|pending|in_review|in-review|resolved|dismissed
  */
 app.get("/admin/strays", async (req, res) => {
   try {
     const page  = Math.max(1, Number(req.query.page)  || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
-    const status = String(req.query.status || "all").toLowerCase();
+    const raw   = String(req.query.status || "all").toLowerCase();
     const offset = (page - 1) * limit;
 
-    // Build WHERE safely (avoid mismatched $ params → 42P18)
+    // Build WHERE (normalize to DB canonical)
     let where = "";
-    const whereVals = [];
-    if (status === "active") {
-      where = "WHERE sr.status IN ('pending','in_review')";
-    } else if (["pending", "in_review", "resolved", "dismissed"].includes(status)) {
-      where = "WHERE sr.status = $1";
-      whereVals.push(status);
-    } // else "all" → no WHERE
+    const vals = [];
+    if (raw === "active") {
+      where = "WHERE sr.status IN ('pending','in-review')";
+    } else {
+      const s = normalizeStatus(raw);
+      if (s) { where = "WHERE sr.status = $1"; vals.push(s); }
+      // else "all" → no WHERE
+    }
 
     const listSql = `
       SELECT
-        sr.report_id,
-        sr.user_id,
-        sr.description,
-        sr.lat,
-        sr.lng,
-        sr.address,
-        sr.photo_url,
-        sr.status,
-        sr.created_at,
-        u.user_name
+        sr.report_id, sr.user_id, sr.description, sr.lat, sr.lng,
+        sr.address, sr.photo_url, sr.status, sr.created_at, u.user_name
       FROM stray_reports sr
       LEFT JOIN users u ON u.user_id = sr.user_id
       ${where}
       ORDER BY sr.created_at DESC
-      LIMIT $${whereVals.length + 1} OFFSET $${whereVals.length + 2}
+      LIMIT $${vals.length + 1} OFFSET $${vals.length + 2}
     `;
-
-    const countSql = `
-      SELECT COUNT(*)::int AS total
-      FROM stray_reports sr
-      ${where}
-    `;
+    const countSql = `SELECT COUNT(*)::int AS total FROM stray_reports sr ${where}`;
 
     const [listRes, countRes] = await Promise.all([
-      pool.query(listSql, [...whereVals, limit, offset]),
-      pool.query(countSql, whereVals),
+      pool.query(listSql, [...vals, limit, offset]),
+      pool.query(countSql, vals),
     ]);
 
     const total = countRes.rows?.[0]?.total ?? 0;
@@ -752,7 +754,7 @@ app.get("/admin/strays", async (req, res) => {
       lng: r.lng,
       address: r.address,
       photo_url: toAbsoluteUrl(req, r.photo_url),
-      status: r.status,
+      status: r.status,               // already canonical (e.g., "in-review")
       created_at: r.created_at,
       reporter_name: r.user_name || null,
     }));
@@ -798,6 +800,7 @@ app.get("/admin/stray-reports/:report_id", async (req, res) => {
   }
 });
 
+
 // 🆕 Admin: create report (JSON)
 app.post("/admin/stray-reports", async (req, res) => {
   try {
@@ -807,14 +810,11 @@ app.post("/admin/stray-reports", async (req, res) => {
     const lat = Number(b.lat);
     const lng = Number(b.lng);
     const address = (b.address || "").trim() || null;
-    const status = String(b.status || "pending").toLowerCase();
+    const status = normalizeStatus(b.status || "pending") || "pending";
     const photo_url = b.photo_url || null;
 
     if (!user_id || !description || !Number.isFinite(lat) || !Number.isFinite(lng)) {
       return res.status(400).json({ success: false, message: "user_id, description, lat, lng are required" });
-    }
-    if (!["pending","in_review","resolved","dismissed"].includes(status)) {
-      return res.status(400).json({ success: false, message: "Invalid status" });
     }
 
     const { rows } = await pool.query(
@@ -831,6 +831,7 @@ app.post("/admin/stray-reports", async (req, res) => {
   }
 });
 
+
 // 🆕 Admin: update report (JSON)
 app.put("/admin/stray-reports/:report_id", async (req, res) => {
   try {
@@ -839,7 +840,6 @@ app.put("/admin/stray-reports/:report_id", async (req, res) => {
     const fields = [];
     const vals = [];
     let i = 1;
-
     const add = (col, val) => { fields.push(`${col} = $${i++}`); vals.push(val); };
 
     if (typeof b.description !== "undefined") add("description", b.description || null);
@@ -848,16 +848,12 @@ app.put("/admin/stray-reports/:report_id", async (req, res) => {
     if (typeof b.lng !== "undefined")        add("lng", Number(b.lng));
     if (typeof b.photo_url !== "undefined")  add("photo_url", b.photo_url || null);
     if (typeof b.status !== "undefined") {
-      const s = String(b.status).toLowerCase();
-      if (!["pending","in_review","resolved","dismissed"].includes(s)) {
-        return res.status(400).json({ success: false, message: "Invalid status" });
-      }
+      const s = normalizeStatus(b.status);
+      if (!s) return res.status(400).json({ success: false, message: `Invalid status. Allowed: ${DB_STATUS.join(", ")}` });
       add("status", s);
     }
 
-    if (!fields.length) {
-      return res.status(400).json({ success: false, message: "No fields to update" });
-    }
+    if (!fields.length) return res.status(400).json({ success: false, message: "No fields to update" });
 
     vals.push(id);
     const sql = `UPDATE stray_reports SET ${fields.join(", ")} WHERE report_id = $${i}`;
@@ -870,6 +866,7 @@ app.put("/admin/stray-reports/:report_id", async (req, res) => {
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 });
+
 
 // 🆕 Admin: delete report
 app.delete("/admin/stray-reports/:report_id", async (req, res) => {
